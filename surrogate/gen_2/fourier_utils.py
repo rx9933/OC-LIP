@@ -133,7 +133,8 @@ def generate_targets(m_fourier, t_param, K, omegas, eps=1e-6):
     
     n_clipped = np.sum(targets < eps) + np.sum(targets > 1.0 - eps)
     if n_clipped > 0:
-        print(f"  WARNING: path clipped at {n_clipped} coordinates")
+        # print(f"  WARNING: path clipped at {n_clipped} coordinates")
+        pass
     
     targets[:, 0] = np.clip(targets[:, 0], eps, 1.0 - eps)
     targets[:, 1] = np.clip(targets[:, 1], eps, 1.0 - eps)

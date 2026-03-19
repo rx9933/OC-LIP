@@ -1,0 +1,40 @@
+/workspace/arushi/miniconda3/envs/torchfem2/lib/python3.13/site-packages/ufl/__init__.py:250: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  import pkg_resources
+============================================================
+  OED TRAINING DATA GENERATION
+============================================================
+  Job ID: 6
+  Number of samples: 2
+  Mean_vx distribution: N(0.5, 0.2²)
+  Drone position distribution: N(0.5, 0.15²)
+============================================================
+Using base seed: 1779956704 (based on current time + job_id offset)
+
+  Mesh DOFs: 3721
+  Fourier modes: 3 (parameter dim: 14)
+  NN input dim: 22
+
+  [1/2] seed=1779956705 mean_vx=0.722
+    Computing initial EIG...
+    Initial EIG = 14.18
+    → EIG: 14.18 → 22.92 (gain=8.75) conv=True [400.0s]
+
+  [2/2] seed=1779956706 mean_vx=0.495
+    Computing initial EIG...
+    Initial EIG = 14.03
+    → EIG: 14.03 → 19.62 (gain=5.59) conv=False [464.1s]
+
+============================================================
+  JOB 6 COMPLETE
+============================================================
+  Successful samples: 2 / 2
+  Success rate: 100.0%
+  Total time: 0.2 hours
+  Avg time per sample: 432.1s
+============================================================
+
+  EIG range: 19.62 to 22.92
+  EIG mean: 21.27 ± 1.65
+  Converged: 1/2
+
+  Saved to oed_training_data_job6.pkl

@@ -3,8 +3,9 @@
 import numpy as np
 import dolfin as dl
 import pickle
-import time
+import time, os
 from scipy.optimize import minimize
+os.environ['OMP_NUM_THREADS'] = '1'
 
 from config import *
 from fourier_utils import fourier_frequencies, xbar_coeffs_to_m
@@ -13,12 +14,38 @@ from fe_utils import reset_cached_bbt
 from oed_objective import CachedEigensolver, oed_objective_and_grad
 from fe_setup import setup_fe_spaces, setup_prior
 
+import warnings
+warnings.filterwarnings('ignore')
+
 # Suppress FEniCS logging
 import logging
 logging.getLogger('FFC').setLevel(logging.WARNING)
 logging.getLogger('UFL').setLevel(logging.WARNING)
 dl.set_log_active(False)
 
+import argparse
+
+import argparse
+import sys
+
+# Only parse arguments if not in Jupyter
+if any('ipykernel' in arg for arg in sys.argv):
+    # We're in Jupyter - use default values
+    args = argparse.Namespace(
+        job_id=0,
+        n_samples=N_SAMPLES,
+        output_prefix='oed_training_data'
+    )
+else:
+    # We're in command line - parse arguments
+    parser = argparse.ArgumentParser(description='Generate OED training data')
+    parser.add_argument('--job_id', type=int, default=0, 
+                        help='Job ID for parallel runs (used as seed offset)')
+    parser.add_argument('--n_samples', type=int, default=N_SAMPLES,
+                        help='Number of samples to generate in this job')
+    parser.add_argument('--output_prefix', type=str, default='oed_training_data',
+                        help='Prefix for output file')
+    args = parser.parse_args()
 
 def sample_mean_vx(mean=MEAN_VX_MEAN, std=MEAN_VX_STD):
     """
@@ -65,30 +92,138 @@ def sample_drone_position(mean=DRONE_POS_MEAN, std=DRONE_POS_STD, bounds=(0.1, 0
     return np.array([x, y])
 
 
-def create_initial_guess(c_init, K, amp=0.05):
+def create_initial_guess(c_init, K, radius_mean=0.1, radius_std=0.03, seed=None):
     """
-    Create initial Fourier parameter guess centered at drone position.
+    Create initial Fourier parameters that generate a circular path around the mean.
+    The radius follows a Gaussian distribution, and the path is constrained to stay
+    within the domain boundaries.
     
     Parameters
     ----------
     c_init : np.ndarray
-        (2,) initial drone position
+        (2,) initial drone position (mean position of circle)
     K : int
-        Number of Fourier modes
-    amp : float
-        Initial amplitude for Fourier coefficients
+        Number of Fourier modes (only first mode used for circle)
+    radius_mean : float
+        Mean radius of the circle
+    radius_std : float
+        Standard deviation of radius distribution
+    seed : int or None
+        Random seed
         
     Returns
     -------
     np.ndarray
-        Flat Fourier parameter vector
+        Flat Fourier parameter vector that generates a circular path
     """
+    if seed is not None:
+        np.random.seed(seed)
+    
+    m0 = np.zeros(4*K + 2)
+    m0[0] = c_init[0]  # x̄
+    m0[1] = c_init[1]  # ȳ
+    
+    # Sample radius from Gaussian (ensuring it's positive)
+    radius = abs(np.random.normal(radius_mean, radius_std))
+    
+    # For a perfect circle with period T, we need:
+    # x(t) = x̄ + R cos(ωt)
+    # y(t) = ȳ + R sin(ωt)
+    # This corresponds to Fourier coefficients:
+    # θ₁ = R, φ₁ = 0, ψ₁ = 0, η₁ = R
+    # (with ω = 2π/T for the first mode)
+    
+    # First mode creates the circle
+    m0[2] = radius      # θ₁ - cosine coefficient for x
+    m0[3] = 0.0         # φ₁ - sine coefficient for x (zero for circle)
+    m0[4] = 0.0         # ψ₁ - cosine coefficient for y (zero for circle)
+    m0[5] = radius      # η₁ - sine coefficient for y
+    
+    # Check if the circle would go out of bounds and adjust if needed
+    x_min = m0[0] - radius
+    x_max = m0[0] + radius
+    y_min = m0[1] - radius
+    y_max = m0[1] + radius
+    
+    # If out of bounds, scale down the radius
+    bounds = [0.1, 0.9]  # Domain boundaries with margin
+    
+    if x_min < bounds[0] or x_max > bounds[1] or y_min < bounds[0] or y_max > bounds[1]:
+        # Calculate maximum allowed radius
+        max_radius_x = min(m0[0] - bounds[0], bounds[1] - m0[0])
+        max_radius_y = min(m0[1] - bounds[0], bounds[1] - m0[1])
+        max_radius = min(max_radius_x, max_radius_y, radius)
+        
+        if max_radius < radius:
+            # Rescale
+            scale_factor = max_radius / radius
+            m0[2] = radius * scale_factor
+            m0[5] = radius * scale_factor
+            print(f"  Radius scaled from {radius:.3f} to {radius*scale_factor:.3f} to fit in bounds")
+    
+    # Higher modes get small random perturbations (optional)
+    for k in range(1, K):
+        # Much smaller amplitudes for higher modes to maintain approximate circle
+        scale = radius * 0.1 / (k + 1)  # Decaying with mode number
+        m0[2 + 4*k] = np.random.normal(0, scale)      # θ_k
+        m0[3 + 4*k] = np.random.normal(0, scale)      # φ_k
+        m0[4 + 4*k] = np.random.normal(0, scale)      # ψ_k
+        m0[5 + 4*k] = np.random.normal(0, scale)      # η_k
+    
+    return m0
+
+
+# Alternative version that creates an ellipse with random orientation
+def create_initial_ellipse(c_init, K, radius_mean=0.1, radius_std=0.03, eccentricity_std=0.2, seed=None):
+    """
+    Create an elliptical path with random orientation and eccentricity.
+    """
+    if seed is not None:
+        np.random.seed(seed)
+    
     m0 = np.zeros(4*K + 2)
     m0[0] = c_init[0]
     m0[1] = c_init[1]
-    m0[2] = amp      # θ₁
-    m0[5] = amp      # η₁
+    
+    # Sample mean radius from Gaussian
+    R = abs(np.random.normal(radius_mean, radius_std))
+    
+    # Add eccentricity (a = R + e, b = R - e)
+    e = abs(np.random.normal(0, eccentricity_std))
+    a = max(0.01, R + e)
+    b = max(0.01, R - e)
+    
+    # Random orientation angle
+    theta = np.random.uniform(0, np.pi)
+    
+    # For an ellipse rotated by angle theta:
+    # x(t) = x̄ + a cos(θ) cos(ωt) - b sin(θ) sin(ωt)
+    # y(t) = ȳ + a sin(θ) cos(ωt) + b cos(θ) sin(ωt)
+    
+    m0[2] = a * np.cos(theta)      # θ₁
+    m0[3] = -b * np.sin(theta)      # φ₁
+    m0[4] = a * np.sin(theta)      # ψ₁
+    m0[5] = b * np.cos(theta)      # η₁
+    
+    # Check bounds and scale if needed
+    # (simplified check - worst-case extent in each direction)
+    max_extent_x = abs(m0[2]) + abs(m0[3])
+    max_extent_y = abs(m0[4]) + abs(m0[5])
+    
+    bounds = [0.1, 0.9]
+    if (m0[0] - max_extent_x < bounds[0] or m0[0] + max_extent_x > bounds[1] or
+        m0[1] - max_extent_y < bounds[0] or m0[1] + max_extent_y > bounds[1]):
+        
+        # Scale down to fit
+        scale_x = min(m0[0] - bounds[0], bounds[1] - m0[0]) / max_extent_x
+        scale_y = min(m0[1] - bounds[0], bounds[1] - m0[1]) / max_extent_y
+        scale = min(scale_x, scale_y, 1.0)
+        
+        m0[2:6] *= scale
+        print(f"  Ellipse scaled by {scale:.3f} to fit in bounds")
+    
     return m0
+
 
 def generate_training_sample(seed, mesh, Vh, prior, simulation_times,
                              observation_times, t_param, K, omegas,
@@ -179,7 +314,7 @@ def generate_training_sample(seed, mesh, Vh, prior, simulation_times,
             J, grad, eig_val, pen_val, spd_val, elapsed = oed_objective_and_grad(
                 m, Vh, mesh, prior, simulation_times, observation_times,
                 wind_velocity, K, omegas, r_modes, noise_variance, t_param,
-                eigsolver, obstacles=None, include_penalties=False
+                eigsolver, obstacles=None, include_penalties=True
             )
             return J, grad
         
@@ -232,8 +367,8 @@ def generate_training_sample(seed, mesh, Vh, prior, simulation_times,
         print(f"    FAILED: {e}")
         return None, False
 
-
-def generate_training_data(n_samples=N_SAMPLES, output_file=OUTPUT_FILE):
+def generate_training_data(n_samples=args.n_samples, 
+                          output_file=f"{args.output_prefix}_job{args.job_id}.pkl"):
     """
     Generate training data for OED.
     
@@ -252,15 +387,17 @@ def generate_training_data(n_samples=N_SAMPLES, output_file=OUTPUT_FILE):
     print("="*60)
     print("  OED TRAINING DATA GENERATION")
     print("="*60)
+    print(f"  Job ID: {args.job_id}")
     print(f"  Number of samples: {n_samples}")
     print(f"  Mean_vx distribution: N({MEAN_VX_MEAN}, {MEAN_VX_STD}²)")
     print(f"  Drone position distribution: N({DRONE_POS_MEAN}, {DRONE_POS_STD}²)")
     print("="*60)
     
-    base_seed = int(time.time())
-    print(f"Using base seed: {base_seed} (based on current time)")
+    # Use job_id as part of the base seed to ensure unique seeds across jobs
+    base_seed = int(time.time()) + args.job_id * 1000000
+    print(f"Using base seed: {base_seed} (based on current time + job_id offset)")
     max_attempts = n_samples * 3
-    
+
     # Setup
     mesh, Vh, wind_velocity = setup_fe_spaces()
     prior = setup_prior(Vh)
@@ -277,8 +414,8 @@ def generate_training_data(n_samples=N_SAMPLES, output_file=OUTPUT_FILE):
     count = 0
     successful = 0
     t_start_all = time.time()
+    total_attempts = 0
     
-    # for seed in range(n_samples):
     while successful < n_samples and total_attempts < max_attempts:
         total_attempts += 1
         
@@ -286,8 +423,6 @@ def generate_training_data(n_samples=N_SAMPLES, output_file=OUTPUT_FILE):
         seed = base_seed + total_attempts
         np.random.seed(seed)
         count += 1
-        
-
         
         # Sample mean_vx
         mean_vx = sample_mean_vx()
@@ -308,20 +443,17 @@ def generate_training_data(n_samples=N_SAMPLES, output_file=OUTPUT_FILE):
             BOUNDS, wind_params
         )
         
-        # Find this section in generate_training_data function:
         if success:
             training_data.append(sample)
             successful += 1
-            # ===== MODIFY THIS PRINT STATEMENT =====
             print(f"    → EIG: {sample['eig_init']:.2f} → {sample['eig_opt']:.2f} "
-                f"(gain={sample['eig_gain']:.2f}) conv={sample['converged']} "
-                f"[{sample['time']:.1f}s]")
-        # ===== END MODIFICATION =====
-        # Save data
+                  f"(gain={sample['eig_gain']:.2f}) conv={sample['converged']} "
+                  f"[{sample['time']:.1f}s]")
+    
     total_time = time.time() - t_start_all
     
     print("\n" + "="*60)
-    print("  TRAINING DATA GENERATION COMPLETE")
+    print(f"  JOB {args.job_id} COMPLETE")
     print("="*60)
     print(f"  Successful samples: {successful} / {total}")
     print(f"  Success rate: {100*successful/total:.1f}%")
@@ -345,5 +477,8 @@ def generate_training_data(n_samples=N_SAMPLES, output_file=OUTPUT_FILE):
     return training_data
 
 
-if __name__ == "__main__":
+
+
+# if __name__ == "__main__":
+def main():
     generate_training_data()

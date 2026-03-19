@@ -35,7 +35,7 @@ DELTA = 8.0
 # =============================================================================
 # OED PARAMETERS
 # =============================================================================
-R_MODES = 20  # Eigenvalues kept
+R_MODES = 5  # Eigenvalues kept
 NOISE_VARIANCE = 1e-4
 REL_NOISE = 0.01
 
@@ -65,7 +65,7 @@ WIND_MEAN_VY = 0.0      # Default mean vertical wind
 # =============================================================================
 # TRAINING DATA PARAMETERS
 # =============================================================================
-N_SAMPLES = 5         # Number of wind samples
+N_SAMPLES = 1         # Number of wind samples
 MEAN_VX_MEAN = 0.5       # Mean of mean_vx distribution
 MEAN_VX_STD = 0.2        # Standard deviation of mean_vx distribution
 DRONE_POS_STD = 0.15     # Standard deviation for drone position (clipped to [0.1, 0.9])
