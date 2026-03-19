@@ -135,3 +135,69 @@ def speed_penalty_dense(m_fourier, t_param, K, omegas,
         g[5 + 4*kk] = dt_dense * np.dot(weight * vy, dvy_deta)
     
     return val, g
+
+
+def acceleration_penalty_dense(
+    m_fourier,
+    t_param,
+    K,
+    omegas,
+    a_max=None,
+    zeta_accel=None,
+    n_dense=200,
+):
+    """
+    Penalty for exceeding maximum acceleration.
+    """
+    if a_max is None:
+        from config import A_MAX
+        a_max = A_MAX
+
+    if zeta_accel is None:
+        from config import ZETA_ACCEL
+        zeta_accel = ZETA_ACCEL
+
+    t_dense = np.linspace(t_param[0], t_param[-1], n_dense)
+    dt_dense = t_dense[1] - t_dense[0]
+
+    _, coeffs = m_to_xbar_coeffs(m_fourier, K)
+
+    # Compute acceleration
+    ax_arr = np.zeros(n_dense)
+    ay_arr = np.zeros(n_dense)
+
+    for k in range(K):
+        w = omegas[k]
+
+        ax_arr += -w**2 * (
+            coeffs[k, 0] * np.cos(w * t_dense)
+            + coeffs[k, 1] * np.sin(w * t_dense)
+        )
+
+        ay_arr += -w**2 * (
+            coeffs[k, 2] * np.cos(w * t_dense)
+            + coeffs[k, 3] * np.sin(w * t_dense)
+        )
+
+    accel2 = ax_arr**2 + ay_arr**2
+    a_max2 = a_max**2
+
+    excess = np.maximum(0.0, accel2 - a_max2)
+
+    val = dt_dense * zeta_accel * np.sum(excess**2)
+
+    weight = 4.0 * zeta_accel * excess
+
+    g = np.zeros(4 * K + 2)
+
+    for kk in range(K):
+        w = omegas[kk]
+        cos_v = np.cos(w * t_dense)
+        sin_v = np.sin(w * t_dense)
+
+        g[2 + 4 * kk] = dt_dense * np.dot(weight * ax_arr, -w**2 * cos_v)
+        g[3 + 4 * kk] = dt_dense * np.dot(weight * ax_arr, -w**2 * sin_v)
+        g[4 + 4 * kk] = dt_dense * np.dot(weight * ay_arr, -w**2 * cos_v)
+        g[5 + 4 * kk] = dt_dense * np.dot(weight * ay_arr, -w**2 * sin_v)
+
+    return val, g

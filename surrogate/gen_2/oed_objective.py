@@ -8,7 +8,7 @@ from hippylib import (STATE, PARAMETER, ADJOINT, MultiVector,
                       ReducedHessian, doublePassG, parRandom)
 
 from fourier_utils import generate_targets
-from penalties import boundary_penalty_dense, speed_penalty_dense
+from penalties import boundary_penalty_dense, speed_penalty_dense, acceleration_penalty_dense
 import sys
 sys.path.append('../../')
 from model_ad_diff_bwd import TimeDependentAD
@@ -318,6 +318,13 @@ def oed_objective_and_grad(m_fourier, Vh, mesh, prior, simulation_times,
         )
         pen_val += spd_val
         grad += grad_spd
+
+        # acceleration / curvature
+        acc_val, grad_acc = acceleration_penalty_dense(
+        m_fourier, t_param, K, omegas
+        )
+        pen_val += acc_val
+        grad += grad_acc
     
     J = -EIG_val + pen_val + spd_val
     
