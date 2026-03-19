@@ -49,7 +49,7 @@ V_MAX = 0.5            # Max sensor speed (domain units / time unit)
 # =============================================================================
 # OPTIMIZATION PARAMETERS
 # =============================================================================
-OPT_MAXITER = 80
+OPT_MAXITER = 200
 OPT_FTOL = 1e-10
 OPT_MAXLS = 40
 

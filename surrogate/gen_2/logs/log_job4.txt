@@ -8,22 +8,21 @@
   Mean_vx distribution: N(0.5, 0.2²)
   Drone position distribution: N(0.5, 0.15²)
 ============================================================
-Using base seed: 1777956702 (based on current time + job_id offset)
+Using base seed: 1777958914 (based on current time + job_id offset)
 
   Mesh DOFs: 3721
   Fourier modes: 3 (parameter dim: 14)
   NN input dim: 22
 
-  [1/2] seed=1777956703 mean_vx=0.482
-  Radius scaled from 0.148 to 0.125 to fit in bounds
+  [1/2] seed=1777958915 mean_vx=0.284
     Computing initial EIG...
-    Initial EIG = 12.07
-    → EIG: 12.07 → 22.79 (gain=10.72) conv=False [400.9s]
+    Initial EIG = 10.22
+    → EIG: 10.22 → 24.31 (gain=14.08) conv=True [625.3s]
 
-  [2/2] seed=1777956704 mean_vx=0.451
+  [2/2] seed=1777958916 mean_vx=0.470
     Computing initial EIG...
-    Initial EIG = 10.85
-    → EIG: 10.85 → 23.53 (gain=12.69) conv=False [377.7s]
+    Initial EIG = 14.76
+    → EIG: 14.76 → 21.66 (gain=6.89) conv=True [244.3s]
 
 ============================================================
   JOB 4 COMPLETE
@@ -31,11 +30,11 @@ Using base seed: 1777956702 (based on current time + job_id offset)
   Successful samples: 2 / 2
   Success rate: 100.0%
   Total time: 0.2 hours
-  Avg time per sample: 389.3s
+  Avg time per sample: 434.8s
 ============================================================
 
-  EIG range: 22.79 to 23.53
-  EIG mean: 23.16 ± 0.37
-  Converged: 0/2
+  EIG range: 21.66 to 24.31
+  EIG mean: 22.98 ± 1.32
+  Converged: 2/2
 
   Saved to oed_training_data_job4.pkl

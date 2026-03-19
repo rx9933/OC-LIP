@@ -61,7 +61,7 @@ with open('oed_training_data_combined.pkl', 'wb') as f:
     pickle.dump(all_data, f)
 print('Saved combined data to oed_training_data_combined.pkl')
 
-for f in job_files:
+for f in sorted(glob.glob('oed_training_data_job*.pkl')):
     os.remove(f)
     print(f'Deleted {f}')
 

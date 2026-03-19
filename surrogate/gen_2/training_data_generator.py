@@ -360,7 +360,7 @@ def generate_training_sample(seed, mesh, Vh, prior, simulation_times,
         }
         # ===== END OF MODIFIED SECTION =====
         
-        return sample, True
+        return sample, result.success
         
     except Exception as e:
         elapsed = time.time() - t0
@@ -480,5 +480,5 @@ def generate_training_data(n_samples=args.n_samples,
 
 
 # if __name__ == "__main__":
-def main():
-    generate_training_data()
+# def main():
+generate_training_data()
