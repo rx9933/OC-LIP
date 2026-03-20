@@ -35,7 +35,7 @@ DELTA = 8.0
 # =============================================================================
 # OED PARAMETERS
 # =============================================================================
-R_MODES = 5  # Eigenvalues kept
+R_MODES = 5 # Eigenvalues kept
 NOISE_VARIANCE = 1e-4
 REL_NOISE = 0.01
 
@@ -44,12 +44,15 @@ REL_NOISE = 0.01
 # =============================================================================
 ZETA_BDY = 1000.0      # Boundary penalty weight
 ZETA_SPEED = 500.0     # Speed penalty weight
+ZETA_ACCEL = 250.0
 V_MAX = 0.5            # Max sensor speed (domain units / time unit)
+A_MAX = .5 
 
 # =============================================================================
 # OPTIMIZATION PARAMETERS
 # =============================================================================
 OPT_MAXITER = 200
+OPT_MAXFUN = 500
 OPT_FTOL = 1e-10
 OPT_MAXLS = 40
 

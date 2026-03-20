@@ -4,37 +4,22 @@
   OED TRAINING DATA GENERATION
 ============================================================
   Job ID: 9
-  Number of samples: 2
+  Number of samples: 20
   Mean_vx distribution: N(0.5, 0.2²)
   Drone position distribution: N(0.5, 0.15²)
 ============================================================
-Using base seed: 1782958919 (based on current time + job_id offset)
+Using base seed: 1782984299 (based on current time + job_id offset)
+Calling setup_fe_spaces()...
+setup_fe_spaces() completed successfully
+Calling setup_prior()...
+setup_prior() completed successfully
+Computing frequencies...
+Frequencies computed: [2.0943951  4.1887902  6.28318531]
 
   Mesh DOFs: 3721
   Fourier modes: 3 (parameter dim: 14)
   NN input dim: 22
 
-  [1/2] seed=1782958920 mean_vx=0.541
+  [1/20] seed=1782984300 mean_vx=0.493
     Computing initial EIG...
-    Initial EIG = 16.22
-    → EIG: 16.22 → 18.38 (gain=2.16) conv=True [334.5s]
-
-  [2/2] seed=1782958921 mean_vx=0.707
-    Computing initial EIG...
-    Initial EIG = 7.46
-    → EIG: 7.46 → 13.03 (gain=5.57) conv=True [269.8s]
-
-============================================================
-  JOB 9 COMPLETE
-============================================================
-  Successful samples: 2 / 2
-  Success rate: 100.0%
-  Total time: 0.2 hours
-  Avg time per sample: 302.2s
-============================================================
-
-  EIG range: 13.03 to 18.38
-  EIG mean: 15.70 ± 2.67
-  Converged: 2/2
-
-  Saved to oed_training_data_job9.pkl
+    Initial EIG = 14.88

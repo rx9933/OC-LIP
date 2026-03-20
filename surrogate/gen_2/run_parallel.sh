@@ -11,9 +11,9 @@ PROJECT_NAME='pml' # or free_surface
 log_time "Starting parallel data generation..."
 
 # Total samples needed
-total_samples=80 #12800
+total_samples=1000 #12800
 
-num_jobs=40 
+num_jobs=50
 samples_per_job=$((total_samples / num_jobs))
 
 log_time "Total samples: $total_samples"
@@ -48,6 +48,7 @@ log_time "Combining output files..."
 python -c "
 import pickle
 import glob
+import os
 
 all_data = []
 for f in sorted(glob.glob('oed_training_data_job*.pkl')):
@@ -61,9 +62,6 @@ with open('oed_training_data_combined.pkl', 'wb') as f:
     pickle.dump(all_data, f)
 print('Saved combined data to oed_training_data_combined.pkl')
 
-for f in sorted(glob.glob('oed_training_data_job*.pkl')):
-    os.remove(f)
-    print(f'Deleted {f}')
 
 "
 

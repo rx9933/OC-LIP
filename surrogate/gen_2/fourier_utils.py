@@ -104,6 +104,37 @@ def xbar_coeffs_to_m(xbar, coeffs, K):
         m[5 + 4*k] = coeffs[k, 3]
     return m
 
+def get_position_at_time(m, t, K, omegas):
+    """
+    Get position [x, y] at a specific time from Fourier parameters.
+    
+    Parameters
+    ----------
+    m : np.ndarray
+        Fourier parameter vector (4*K + 2)
+    t : float
+        Time
+    K : int
+        Number of Fourier modes
+    omegas : np.ndarray
+        Angular frequencies
+        
+    Returns
+    -------
+    np.ndarray
+        [x, y] position
+    """
+    x = m[0]  # x̄
+    y = m[1]  # ȳ
+    
+    for k in range(K):
+        cos_kt = np.cos(omegas[k] * t)
+        sin_kt = np.sin(omegas[k] * t)
+        
+        x += m[2 + 4*k] * cos_kt + m[3 + 4*k] * sin_kt      # θ_k cos + φ_k sin
+        y += m[4 + 4*k] * cos_kt + m[5 + 4*k] * sin_kt      # ψ_k cos + η_k sin
+    
+    return np.array([x, y])
 
 def generate_targets(m_fourier, t_param, K, omegas, eps=1e-6):
     """

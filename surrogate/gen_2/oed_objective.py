@@ -8,7 +8,7 @@ from hippylib import (STATE, PARAMETER, ADJOINT, MultiVector,
                       ReducedHessian, doublePassG, parRandom)
 
 from fourier_utils import generate_targets
-from penalties import boundary_penalty_dense, speed_penalty_dense, acceleration_penalty_dense
+from penalties import boundary_penalty_dense, speed_penalty_dense, acceleration_penalty_dense, initial_position_penalty_dense
 import sys
 sys.path.append('../../')
 from model_ad_diff_bwd import TimeDependentAD
@@ -237,7 +237,7 @@ def compute_eig_gradient(m_fourier, prob, prior, r_modes, eigsolver,
     return EIG_val, grad_eig, lmbda, V
 
 
-def oed_objective_and_grad(m_fourier, Vh, mesh, prior, simulation_times,
+def oed_objective_and_grad(c0, m_fourier, Vh, mesh, prior, simulation_times,
                            observation_times, wind_velocity, K, omegas,
                            r_modes, noise_variance, t_param, eigsolver,
                            obstacles=None, include_penalties=True):
@@ -325,7 +325,15 @@ def oed_objective_and_grad(m_fourier, Vh, mesh, prior, simulation_times,
         )
         pen_val += acc_val
         grad += grad_acc
+                # Initial position penalty (NEW)
+        if c0 is not None:
+            init_pen_val, grad_init = initial_position_penalty_dense(
+                m_fourier, t_param, K, omegas, c0
+            )
+            pen_val += init_pen_val
+            grad += grad_init
     
+
     J = -EIG_val + pen_val + spd_val
     
     _elapsed = time.time() - _t0

@@ -201,3 +201,49 @@ def acceleration_penalty_dense(
         g[5 + 4 * kk] = dt_dense * np.dot(weight * ay_arr, -w**2 * sin_v)
 
     return val, g
+
+def initial_position_penalty_dense(m, t_param, K, omegas, c0, weight=1000.0):
+    """
+    Penalty to enforce that the path starts at c0.
+    """
+    from fourier_utils import get_position_at_time  # Import the new helper
+    
+    # Get position at first time - use the correct function
+    pos0 = get_position_at_time(m, t_param[0], K, omegas)
+    
+    # Position error
+    dx = pos0[0] - c0[0]
+    dy = pos0[1] - c0[1]
+    
+    # Penalty (squared error)
+    penalty = 0.5 * weight * (dx**2 + dy**2)
+    
+    # Gradient computation
+    grad = np.zeros_like(m)
+    
+    t0 = t_param[0]
+    
+    # Gradient w.r.t x̄
+    grad[0] = weight * dx
+    
+    # Gradient w.r.t ȳ
+    grad[1] = weight * dy
+    
+    # Gradients for Fourier coefficients
+    for k in range(K):
+        cos_kt = np.cos(omegas[k] * t0)
+        sin_kt = np.sin(omegas[k] * t0)
+        
+        # θ_k (x cosine coefficient)
+        grad[2 + 4*k] = weight * dx * cos_kt
+        
+        # φ_k (x sine coefficient)
+        grad[3 + 4*k] = weight * dx * sin_kt
+        
+        # ψ_k (y cosine coefficient)
+        grad[4 + 4*k] = weight * dy * cos_kt
+        
+        # η_k (y sine coefficient)
+        grad[5 + 4*k] = weight * dy * sin_kt
+    
+    return penalty, grad

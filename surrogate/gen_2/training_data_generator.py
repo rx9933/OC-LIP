@@ -5,7 +5,15 @@ import dolfin as dl
 import pickle
 import time, os
 from scipy.optimize import minimize
+# Add at the VERY beginning of your script, before importing dolfin
+import os
 os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
+
+# Try to disable MPI in FEniCS
+os.environ['DOLFIN_NOPETSC'] = '1'  # May not work depending on compilation
 
 from config import *
 from fourier_utils import fourier_frequencies, xbar_coeffs_to_m
@@ -301,21 +309,24 @@ def generate_training_sample(seed, mesh, Vh, prior, simulation_times,
         # ===== ADD THIS SECTION TO COMPUTE INITIAL EIG =====
         print(f"    Computing initial EIG...")
         # Compute initial EIG (without penalties)
-        _, _, eig_init, _, _, _ = oed_objective_and_grad(
+        _, _, eig_init, _, _, _ = oed_objective_and_grad(c_init,
             m0, Vh, mesh, prior, simulation_times, observation_times,
             wind_velocity, K, omegas, r_modes, noise_variance, t_param,
             eigsolver, obstacles=None, include_penalties=True 
         )
         print(f"    Initial EIG = {eig_init:.2f}")
         # ===== END OF ADDED SECTION =====
-        
+        sys.stdout.flush() 
         # Define objective function for this sample
         def objective(m):
-            J, grad, eig_val, pen_val, spd_val, elapsed = oed_objective_and_grad(
+            J, grad, eig_val, pen_val, spd_val, elapsed = oed_objective_and_grad(c_init,
                 m, Vh, mesh, prior, simulation_times, observation_times,
                 wind_velocity, K, omegas, r_modes, noise_variance, t_param,
                 eigsolver, obstacles=None, include_penalties=True
             )
+            print("ob")
+            sys.stdout.flush()
+
             return J, grad
         
         # Optimize
@@ -323,14 +334,14 @@ def generate_training_sample(seed, mesh, Vh, prior, simulation_times,
             objective, m0,
             jac=True, method='L-BFGS-B', bounds=bounds,
             options={'maxiter': OPT_MAXITER, 'disp': False,
-                     'ftol': OPT_FTOL, 'maxls': OPT_MAXLS}
+                     'ftol': OPT_FTOL, 'maxls': OPT_MAXLS, 'maxfun':OPT_MAXFUN}
         )
         
         m_opt = result.x
         
         # Compute final EIG (without penalties)
         eigsolver.reset()
-        _, _, eig_opt, _, _, _ = oed_objective_and_grad(
+        _, _, eig_opt, _, _, _ = oed_objective_and_grad(c_init,
             m_opt, Vh, mesh, prior, simulation_times, observation_times,
             wind_velocity, K, omegas, r_modes, noise_variance, t_param,
             eigsolver, obstacles=None, include_penalties=False
@@ -371,18 +382,6 @@ def generate_training_data(n_samples=args.n_samples,
                           output_file=f"{args.output_prefix}_job{args.job_id}.pkl"):
     """
     Generate training data for OED.
-    
-    Parameters
-    ----------
-    n_samples : int
-        Number of wind samples to generate
-    output_file : str
-        Path to save output pickle file
-        
-    Returns
-    -------
-    list
-        List of training samples
     """
     print("="*60)
     print("  OED TRAINING DATA GENERATION")
@@ -398,17 +397,33 @@ def generate_training_data(n_samples=args.n_samples,
     print(f"Using base seed: {base_seed} (based on current time + job_id offset)")
     max_attempts = n_samples * 3
 
-    # Setup
+    # Setup - ADD DEBUGGING HERE
+    print("Calling setup_fe_spaces()...")
+    import sys
+    sys.stdout.flush()  # Force print to appear immediately
+    
     mesh, Vh, wind_velocity = setup_fe_spaces()
+    print("setup_fe_spaces() completed successfully")
+    sys.stdout.flush()
+    
+    print("Calling setup_prior()...")
+    sys.stdout.flush()
     prior = setup_prior(Vh)
+    print("setup_prior() completed successfully")
+    sys.stdout.flush()
     
     # Compute frequencies
+    print("Computing frequencies...")
     omegas = fourier_frequencies(TY, K)
-    
+    print(f"Frequencies computed: {omegas}")
+    sys.stdout.flush()
+
     print(f"\n  Mesh DOFs: {Vh.dim()}")
     print(f"  Fourier modes: {K} (parameter dim: {4*K + 2})")
     print(f"  NN input dim: {nn_input_dim(WIND_R)}")
-    
+    sys.stdout.flush()
+
+
     training_data = []
     total = n_samples
     count = 0
@@ -436,20 +451,25 @@ def generate_training_data(n_samples=args.n_samples,
         }
         
         print(f"\n  [{count}/{total}] seed={seed:3d} mean_vx={mean_vx:.3f}")
-        
+        sys.stdout.flush()
+
         sample, success = generate_training_sample(
             seed, mesh, Vh, prior, SIMULATION_TIMES, OBSERVATION_TIMES,
             OBSERVATION_TIMES, K, omegas, R_MODES, NOISE_VARIANCE,
             BOUNDS, wind_params
         )
         
-        if success:
-            training_data.append(sample)
-            successful += 1
-            print(f"    → EIG: {sample['eig_init']:.2f} → {sample['eig_opt']:.2f} "
-                  f"(gain={sample['eig_gain']:.2f}) conv={sample['converged']} "
-                  f"[{sample['time']:.1f}s]")
-    
+        # if success:
+        training_data.append(sample)
+        successful += 1
+        print(f"    → EIG: {sample['eig_init']:.2f} → {sample['eig_opt']:.2f} "
+                f"(gain={sample['eig_gain']:.2f}) conv={sample['converged']} "
+                f"[{sample['time']:.1f}s]")
+        sys.stdout.flush()
+        with open(output_file, 'wb') as f: # TODO: TAB THIS BY 1
+            pickle.dump(training_data, f)
+        print(f"\n  Saved to {output_file}")
+
     total_time = time.time() - t_start_all
     
     print("\n" + "="*60)
@@ -470,9 +490,7 @@ def generate_training_data(n_samples=args.n_samples,
         print(f"  Converged: {conv}/{successful}")
     
     # Save
-    with open(output_file, 'wb') as f:
-        pickle.dump(training_data, f)
-    print(f"\n  Saved to {output_file}")
+
     
     return training_data
 
