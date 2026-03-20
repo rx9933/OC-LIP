@@ -459,16 +459,16 @@ def generate_training_data(n_samples=args.n_samples,
             BOUNDS, wind_params
         )
         
-        # if success:
-        training_data.append(sample)
-        successful += 1
-        print(f"    → EIG: {sample['eig_init']:.2f} → {sample['eig_opt']:.2f} "
-                f"(gain={sample['eig_gain']:.2f}) conv={sample['converged']} "
-                f"[{sample['time']:.1f}s]")
-        sys.stdout.flush()
-        with open(output_file, 'wb') as f: # TODO: TAB THIS BY 1
-            pickle.dump(training_data, f)
-        print(f"\n  Saved to {output_file}")
+        if success:
+            training_data.append(sample)
+            successful += 1
+            print(f"    → EIG: {sample['eig_init']:.2f} → {sample['eig_opt']:.2f} "
+                    f"(gain={sample['eig_gain']:.2f}) conv={sample['converged']} "
+                    f"[{sample['time']:.1f}s]")
+            sys.stdout.flush()
+            with open(output_file, 'wb') as f: # TODO: TAB THIS BY 1
+                pickle.dump(training_data, f)
+            print(f"\n  Saved to {output_file}")
 
     total_time = time.time() - t_start_all
     
