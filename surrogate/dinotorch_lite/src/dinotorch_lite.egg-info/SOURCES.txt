@@ -1,0 +1,11 @@
+pyproject.toml
+src/dinotorch_lite/__init__.py
+src/dinotorch_lite/dinotorch_utils.py
+src/dinotorch_lite/evaluation_utils.py
+src/dinotorch_lite/misfits.py
+src/dinotorch_lite/training_utils.py
+src/dinotorch_lite.egg-info/PKG-INFO
+src/dinotorch_lite.egg-info/SOURCES.txt
+src/dinotorch_lite.egg-info/dependency_links.txt
+src/dinotorch_lite.egg-info/requires.txt
+src/dinotorch_lite.egg-info/top_level.txt

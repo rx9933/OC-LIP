@@ -1,0 +1,21 @@
+data_type=xvspectral, n_train=50, rel_error=0.21287138312538326
+data_type=xvspectral, n_train=100, rel_error=0.20149479655370017
+data_type=xvspectral, n_train=200, rel_error=0.19586453341497653
+data_type=xvspectral, n_train=400, rel_error=0.18971557133403197
+data_type=fno, n_train=50, rel_error=0.24005864560604095
+data_type=fno, n_train=100, rel_error=0.22301751375198364
+data_type=fno, n_train=200, rel_error=0.2024153172969818
+data_type=fno, n_train=400, rel_error=0.19123579561710358
+data_type=fno, n_train=800, rel_error=0.19068756699562073
+data_type=xvspectral, n_train=800, rel_error=0.5848510809852548, mse=0.013921330235898494
+data_type=fno, n_train=800, rel_error=0.2693980634212494, mse=2.9309305318747647e-05
+data_type=xvspectral, n_train=50, rel_error=0.21211959759114654, mse=0.0018481682520359755
+data_type=fno, n_train=50, rel_error=0.2378314733505249, mse=2.1189400285948068e-05
+data_type=xvspectral, n_train=100, rel_error=0.20100353066770582, mse=0.0016740236524492502
+data_type=fno, n_train=100, rel_error=0.2245069444179535, mse=2.026806032517925e-05
+data_type=xvspectral, n_train=200, rel_error=0.19654076549550575, mse=0.0015437059244140983
+data_type=fno, n_train=200, rel_error=0.206255704164505, mse=1.736844023980666e-05
+data_type=xvspectral, n_train=400, rel_error=0.19202198152901295, mse=0.0014682434312999247
+data_type=fno, n_train=400, rel_error=0.1879086047410965, mse=1.4645675037172623e-05
+data_type=xvspectral, n_train=800, rel_error=0.18624582992994196, mse=0.0014159020455554129
+data_type=fno, n_train=800, rel_error=0.1943732649087906, mse=1.4938017557142302e-05
