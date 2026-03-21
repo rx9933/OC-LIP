@@ -7,6 +7,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', type=str, default='data/', help='Data directory')
     parser.add_argument('--rM', type=int, required=True, help='Input basis dimension')
+    parser.add_argument('--rQ', type=int, required=True, help='reduced output basis dimension')
     parser.add_argument('--dQ', type=int, required=True, help='full output basis dimension')
     parser.add_argument('--dM', type=int, required=True, help='full input basis dimension')
     parser.add_argument('--n_train', type=int, required=True, help='Number of training samples')
@@ -14,10 +15,11 @@ def main():
     parser.add_argument('--n_data', type=int, required=True, help='Number of total samples')
 
     args = parser.parse_args()
-    large_epochs = 2000
-    small_epochs = 300
+    large_epochs = 200
+    small_epochs = 100
 
     # l2
+    '''
     os.system(
     f"python train_rbno_oc.py "
     f"--data_type 'xv' " # data = using the position of the drone + POD reduced velocity field
@@ -27,9 +29,10 @@ def main():
     f"--n_test {args.n_test} "
     f"--n_data {args.n_data} "
     f"--data_dir {args.data_dir} "
-    f"--epochs {large_epochs} " 
+    f"--epochs {small_epochs} " 
     )
-
+    
+    '''
     os.system(
     f"python train_rbno_oc.py "
     f"--data_type 'xvspectral' " # data = using the position of the drone + POD reduced velocity field
@@ -39,10 +42,9 @@ def main():
     f"--n_test {args.n_test} "
     f"--n_data {args.n_data} "
     f"--data_dir {args.data_dir} "
-    f"--epochs {large_epochs} " 
+    f"--epochs {small_epochs} " 
     )
     
-
     
     os.system(
     f"python train_fno_oc.py "

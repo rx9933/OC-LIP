@@ -8,3 +8,7 @@ data_type=xvspectral, n_train=400, rel_error=0.19202198152901295, mse=0.00146824
 data_type=fno, n_train=400, rel_error=0.1879086047410965, mse=1.4645675037172623e-05
 data_type=xvspectral, n_train=800, rel_error=0.18624582992994196, mse=0.0014159020455554129
 data_type=fno, n_train=800, rel_error=0.1943732649087906, mse=1.4938017557142302e-05
+data_type=xvspectral, n_train=50, rel_error=0.22670645883545867, mse=0.002047383566386998
+data_type=xvspectral, n_train=50, rel_error=0.20986852284619972, mse=0.0018133661523461343
+data_type=fno, n_train=50, rel_error=0.22801217436790466, mse=1.9619848899310455e-05
+data_type=xvspectral, n_train=100, rel_error=0.20048243916752753, mse=0.0016410505631938577

@@ -83,7 +83,7 @@ def compute_velocity_field_navier_stokes(mesh, direction='east', speed=4.0, Re_v
 
     vh = dl.project(v, Xh)
     return vh
-def spectral_wind_to_field(mesh, Vh, coeffs):
+def spectral_wind_to_field(mesh, wind_coeffs):
     """
     Reconstruct wind field from spectral coefficients.
     
@@ -91,72 +91,61 @@ def spectral_wind_to_field(mesh, Vh, coeffs):
     ----------
     mesh : dolfin Mesh
         Computational mesh
-    Vh : dolfin FunctionSpace
-        Vector function space for the velocity field
-    coeffs : dict
-        Spectral coefficients dictionary containing:
-        - 'a_ij': (r_wind, r_wind) array of cosine coefficients for x-velocity
-        - 'b_ij': (r_wind, r_wind) array of sine coefficients for y-velocity
-        - 'mean_vx': float, mean horizontal wind
-        - 'mean_vy': float, mean vertical wind
-        - 'r_wind': int, number of spectral modes
+    wind_coeffs : dict
+        Spectral coefficients dictionary
         
     Returns
     -------
     dolfin Function
-        Reconstructed velocity field
+        Reconstructed velocity field (vector function)
     """
     # Extract parameters
-    r_wind = coeffs['r_wind']
-    a_ij = coeffs['a_ij']
-    b_ij = coeffs['b_ij']
-    mean_vx = coeffs['mean_vx']
-    mean_vy = coeffs['mean_vy']
+    r_wind = wind_coeffs['r_wind']
+    a_ij = wind_coeffs['a_ij']
+    b_ij = wind_coeffs['b_ij']
+    mean_vx = wind_coeffs['mean_vx']
+    mean_vy = wind_coeffs['mean_vy']
     
     Lx, Ly = 1.0, 1.0  # unit square
     
-    # Get mesh coordinates
-    xy = mesh.coordinates()
-    x = xy[:, 0]
-    y = xy[:, 1]
+    # Create a UserExpression that evaluates the wind field at any point
+    class WindExpression(dl.UserExpression):
+        def __init__(self, a_ij, b_ij, mean_vx, mean_vy, r_wind, **kwargs):
+            super().__init__(**kwargs)
+            self.a_ij = a_ij
+            self.b_ij = b_ij
+            self.mean_vx = mean_vx
+            self.mean_vy = mean_vy
+            self.r_wind = r_wind
+            
+        def eval(self, values, x):
+            # Evaluate at point x
+            vx_val = self.mean_vx
+            vy_val = self.mean_vy
+            
+            for i in range(self.r_wind):
+                for j in range(self.r_wind):
+                    mode_i = i + 1
+                    mode_j = j + 1
+                    vx_val += self.a_ij[i, j] * np.cos(mode_i * np.pi * x[1] / Ly) * np.cos(mode_j * np.pi * x[0] / Lx)
+                    vy_val += self.b_ij[i, j] * np.sin(mode_i * np.pi * x[1] / Ly) * np.cos(mode_j * np.pi * x[0] / Lx)
+            
+            values[0] = vx_val
+            values[1] = vy_val
+            
+        def value_shape(self):
+            return (2,)
     
-    # Build velocity field at mesh vertices
-    vx = np.full(len(xy), mean_vx)
-    vy = np.full(len(xy), mean_vy)
+    # Create the expression
+    wind_expr = WindExpression(a_ij, b_ij, mean_vx, mean_vy, r_wind, degree=2)
     
-    for i in range(r_wind):
-        for j in range(r_wind):
-            mode_i = i + 1
-            mode_j = j + 1
-            vx += a_ij[i, j] * np.cos(mode_i * np.pi * y / Ly) * np.cos(mode_j * np.pi * x / Lx)
-            vy += b_ij[i, j] * np.sin(mode_i * np.pi * y / Ly) * np.cos(mode_j * np.pi * x / Lx)
+    # Create vector function space for velocity
+    V_vec = dl.VectorFunctionSpace(mesh, 'Lagrange', 1)
     
-    # Create dolfin functions
-    Vh_scalar = dl.FunctionSpace(mesh, 'Lagrange', 1)
+    # Interpolate to vector function space
+    v_func = dl.interpolate(wind_expr, V_vec)
     
-    vx_func = dl.Function(Vh_scalar)
-    vy_func = dl.Function(Vh_scalar)
-    
-    # Get vertex to DOF mapping
-    v2d = dl.vertex_to_dof_map(Vh_scalar)
-    
-    # Assign values
-    vx_vals = vx_func.vector().get_local()
-    vy_vals = vy_func.vector().get_local()
-    
-    for i in range(len(xy)):
-        vx_vals[v2d[i]] = vx[i]
-        vy_vals[v2d[i]] = vy[i]
-    
-    vx_func.vector().set_local(vx_vals)
-    vy_func.vector().set_local(vy_vals)
-    
-    # Assign to vector function
-    v_func = dl.Function(Vh)
-    fa = dl.FunctionAssigner(Vh, [Vh_scalar, Vh_scalar])
-    fa.assign(v_func, [vx_func, vy_func])
-    
-    return v_func
+    return v_func, V_vec  # Return both the function and the space
 def spectral_wind_to_coeffs(v_func, mesh, r_wind=3):
     """
     Extract spectral coefficients from a wind field (inverse of spectral_wind_to_field).

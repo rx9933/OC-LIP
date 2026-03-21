@@ -4,3 +4,5 @@ model=FNO, r_wind=3, n_train=100, rel_error=2.245069e-01
 model=FNO, r_wind=3, n_train=200, rel_error=2.062557e-01
 model=FNO, r_wind=3, n_train=400, rel_error=1.879086e-01
 model=FNO, r_wind=3, n_train=800, rel_error=1.943733e-01
+model=FNO, r_wind=3, n_train=50, rel_error=2.280122e-01
+model=FNO, r_wind=3, n_train=100, rel_error=2.025196e-01
