@@ -202,7 +202,7 @@ def acceleration_penalty_dense(
 
     return val, g
 
-def initial_position_penalty_dense(m, t_param, K, omegas, c0, weight=1000.0):
+def initial_position_penalty_dense(m, t_param, K, omegas, c0, weight=200.0):
     """
     Penalty to enforce that the path starts at c0.
     """
