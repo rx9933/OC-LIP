@@ -9,6 +9,9 @@ sys.path.append('generate_data/')
 sys.path.append('plotting/')
 sys.path.append('/workspace/arushi/hippylib')
 sys.path.append('/workspace/arushi/hippyflow')
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), 'generate_data'))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 # https://github.com/dinoSciML/operator_learning_intro/tree/main/dinotorch_lite
 from dinotorch_lite.src.dinotorch_lite import * 
@@ -214,9 +217,19 @@ for sample_idx in test_indices:
     try:
         from oed_objective import compute_eig_for_path  # You need to implement this
         eig_pred = compute_eig_for_path(m_pred, wind_coeffs, mesh, Vh_scalar)
-    except:
+    except Exception as e:
+        print(f"  WARNING: compute_eig_for_path failed: {e}")
+        import traceback; traceback.print_exc()
         eig_pred = None
-    
+    if eig_pred is not None:
+        from penalties import boundary_penalty_dense, speed_penalty_dense
+        bdy_val, _ = boundary_penalty_dense(m_pred, observation_times, K, omegas)
+        spd_val, _ = speed_penalty_dense(m_pred, observation_times, K, omegas)
+        print(f"  NN penalties: boundary={bdy_val:.2f}, speed={spd_val:.2f}")
+        print(f"  NN raw EIG={eig_pred:.4f}, NN penalized EIG={eig_pred - bdy_val - spd_val:.4f}")
+        # Recompute true EIG with same fresh eigensolver for fair comparison
+        eig_true_recomputed = compute_eig_for_path(m_true, wind_coeffs, mesh, Vh_scalar)
+        print(f"  Stored PDE EIG={eig_true:.4f}, Recomputed PDE EIG={eig_true_recomputed:.4f}, NN EIG={eig_pred:.4f}")
     # Create subplot for this sample
     # Row 1: Wind field (if available) and paths
     ax1 = plt.subplot(n_plot, 4, plot_idx)
@@ -286,7 +299,7 @@ for sample_idx in test_indices:
     plot_idx += 1
     
     labels = ['Initial', 'PDE Optimal']
-    values = [eig_init, eig_true]
+    values = [eig_init, eig_true_recomputed]
     colors_bar = ['orange', 'blue']
     
     if eig_pred is not None:
