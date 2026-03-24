@@ -339,3 +339,29 @@ def oed_objective_and_grad(c0, m_fourier, Vh, mesh, prior, simulation_times,
     _elapsed = time.time() - _t0
     
     return J, grad, EIG_val, pen_val, spd_val, _elapsed
+def compute_eig_for_path(m_fourier, wind_coeffs, mesh, Vh):
+    """Compute EIG for a given set of Fourier path coefficients."""
+    from config import (SIMULATION_TIMES, OBSERVATION_TIMES, K, TY,
+                        NOISE_VARIANCE, R_MODES, GAMMA, DELTA)
+    from fourier_utils import fourier_frequencies
+    from wind_utils import spectral_wind_to_field
+    from hippylib import BiLaplacianPrior
+
+    omegas = fourier_frequencies(TY, K)
+    from fe_setup import setup_prior
+    prior = setup_prior(Vh)
+
+    if wind_coeffs is not None:
+        wind_velocity, _ = spectral_wind_to_field(mesh, wind_coeffs)
+    else:
+        V_vec = dl.VectorFunctionSpace(mesh, 'Lagrange', 1)
+        wind_velocity = dl.Function(V_vec)
+
+    prob, _, _ = build_problem(
+        m_fourier, Vh, prior, SIMULATION_TIMES, OBSERVATION_TIMES,
+        wind_velocity, K, omegas, NOISE_VARIANCE, mesh
+    )
+
+    eigsolver = CachedEigensolver()
+    _, _, EIG_val = eigsolver.solve(prob, prior, R_MODES)
+    return EIG_val
