@@ -153,15 +153,15 @@ class TimeDependentAD:
     def generate_vector(self, component = "ALL"):
         if component == "ALL":
             u = TimeDependentVector(self.simulation_times)
-            u.initialize(self.M, 0)
+            u.initialize(self.Vh[STATE])
             m = dl.Vector()
             self.prior.init_vector(m,0)
             p = TimeDependentVector(self.simulation_times)
-            p.initialize(self.M, 0)
+            p.initialize(self.Vh[STATE])
             return [u, m, p]
         elif component == STATE:
             u = TimeDependentVector(self.simulation_times)
-            u.initialize(self.M, 0)
+            u.initialize(self.Vh[STATE])
             return u
         elif component == PARAMETER:
             m = dl.Vector()
@@ -169,7 +169,7 @@ class TimeDependentAD:
             return m
         elif component == ADJOINT:
             p = TimeDependentVector(self.simulation_times)
-            p.initialize(self.M, 0)
+            p.initialize(self.Vh[STATE])
             return p
         else:
             raise
@@ -205,7 +205,7 @@ class TimeDependentAD:
     def solveAdj(self, out, x):
         
         grad_state = TimeDependentVector(self.simulation_times)
-        grad_state.initialize(self.M, 0)
+        grad_state.initialize(self.Vh[STATE])
         self.misfit.grad(STATE, x, grad_state)
         
         out.zero()
@@ -448,15 +448,15 @@ class TimeDependentAD:
     def generate_vector(self, component = "ALL"):
         if component == "ALL":
             u = TimeDependentVector(self.simulation_times)
-            u.initialize(self.M, 0)
+            u.initialize(self.Vh[STATE])
             m = dl.Vector()
             self.prior.init_vector(m,0)
             p = TimeDependentVector(self.simulation_times)
-            p.initialize(self.M, 0)
+            p.initialize(self.Vh[STATE])
             return [u, m, p]
         elif component == STATE:
             u = TimeDependentVector(self.simulation_times)
-            u.initialize(self.M, 0)
+            u.initialize(self.Vh[STATE])
             return u
         elif component == PARAMETER:
             m = dl.Vector()
@@ -464,7 +464,7 @@ class TimeDependentAD:
             return m
         elif component == ADJOINT:
             p = TimeDependentVector(self.simulation_times)
-            p.initialize(self.M, 0)
+            p.initialize(self.Vh[STATE])
             return p
         else:
             raise
@@ -500,7 +500,7 @@ class TimeDependentAD:
     def solveAdj(self, out, x):
         
         grad_state = TimeDependentVector(self.simulation_times)
-        grad_state.initialize(self.M, 0)
+        grad_state.initialize(self.Vh[STATE])
         self.misfit.grad(STATE, x, grad_state)
         
         out.zero()
