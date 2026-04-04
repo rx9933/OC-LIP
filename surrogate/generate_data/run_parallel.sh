@@ -11,9 +11,9 @@ PROJECT_NAME='pml' # or free_surface
 log_time "Starting parallel data generation..."
 
 # Total samples needed
-total_samples=1000 #12800
+total_samples=1 #12800
 
-num_jobs=50
+num_jobs=1
 samples_per_job=$((total_samples / num_jobs))
 
 log_time "Total samples: $total_samples"
@@ -44,25 +44,25 @@ wait
 log_time "All jobs finished"
 
 # Combine all the output files
-log_time "Combining output files..."
-python -c "
-import pickle
-import glob
-import os
+# log_time "Combining output files..."
+# python -c "
+# import pickle
+# import glob
+# import os
 
-all_data = []
-for f in sorted(glob.glob('oed_training_data_job*.pkl')):
-    print(f'Loading {f}')
-    with open(f, 'rb') as fp:
-        data = pickle.load(fp)
-        all_data.extend(data)
+# all_data = []
+# for f in sorted(glob.glob('oed_training_data_job*.pkl')):
+#     print(f'Loading {f}')
+#     with open(f, 'rb') as fp:
+#         data = pickle.load(fp)
+#         all_data.extend(data)
 
-print(f'Total samples: {len(all_data)}')
-with open('oed_training_data_combined.pkl', 'wb') as f:
-    pickle.dump(all_data, f)
-print('Saved combined data to oed_training_data_combined.pkl')
+# print(f'Total samples: {len(all_data)}')
+# with open('oed_training_data_combined.pkl', 'wb') as f:
+#     pickle.dump(all_data, f)
+# print('Saved combined data to oed_training_data_combined.pkl')
 
 
-"
+# "
 
 log_time "Done!"

@@ -324,7 +324,7 @@ def generate_training_sample(seed, mesh, Vh, prior, simulation_times,
                 wind_velocity, K, omegas, r_modes, noise_variance, t_param,
                 eigsolver, obstacles=None, include_penalties=True
             )
-            print("ob")
+            
             sys.stdout.flush()
 
             return J, grad
@@ -333,7 +333,7 @@ def generate_training_sample(seed, mesh, Vh, prior, simulation_times,
         result = minimize(
             objective, m0,
             jac=True, method='L-BFGS-B', bounds=bounds,
-            options={'maxiter': OPT_MAXITER, 'disp': False,
+            options={'maxiter': OPT_MAXITER, 'disp': True,
                      'ftol': OPT_FTOL, 'maxls': OPT_MAXLS, 'maxfun':OPT_MAXFUN}
         )
         
