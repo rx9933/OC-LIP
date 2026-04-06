@@ -202,7 +202,7 @@ def acceleration_penalty_dense(
 
     return val, g
 
-def initial_position_penalty_dense(m, t_param, K, omegas, c0, weight=200.0):
+def initial_position_penalty_dense(m, t_param, K, omegas, c0, weight=5000):
     """
     Penalty to enforce that the path starts at c0.
     """
@@ -247,3 +247,82 @@ def initial_position_penalty_dense(m, t_param, K, omegas, c0, weight=200.0):
         grad[5 + 4*k] = weight * dy * sin_kt
     
     return penalty, grad
+
+def signed_distance_to_obstacle(xy, obs):
+    """Signed distance from point to obstacle. Negative = inside."""
+    x, y = xy[0], xy[1]
+    
+    if obs['type'] == 'circle':
+        cx, cy = obs['center']
+        r = obs['radius']
+        d = np.sqrt((x - cx)**2 + (y - cy)**2)
+        dist = d - r
+        if d < 1e-12:
+            grad_dist = np.array([1.0, 0.0])
+        else:
+            grad_dist = np.array([(x - cx) / d, (y - cy) / d])
+        return dist, grad_dist
+    
+    elif obs['type'] == 'rectangle':
+        xmin, ymin = obs['lower']
+        xmax, ymax = obs['upper']
+        dx = max(xmin - x, 0, x - xmax)
+        dy = max(ymin - y, 0, y - ymax)
+        
+        if dx == 0 and dy == 0:
+            # Inside the rectangle
+            dist = -min(x - xmin, xmax - x, y - ymin, ymax - y)
+            dists_to_edges = [x - xmin, xmax - x, y - ymin, ymax - y]
+            min_idx = np.argmin(dists_to_edges)
+            grad_dist = [np.array([-1, 0]), np.array([1, 0]),
+                         np.array([0, -1]), np.array([0, 1])][min_idx]
+        else:
+            # Outside the rectangle
+            dist = np.sqrt(dx**2 + dy**2)
+            gx = 0.0
+            gy = 0.0
+            if x < xmin: gx = (x - xmin)
+            elif x > xmax: gx = (x - xmax)
+            if y < ymin: gy = (y - ymin)
+            elif y > ymax: gy = (y - ymax)
+            norm = np.sqrt(gx**2 + gy**2)
+            if norm < 1e-12:
+                grad_dist = np.array([1.0, 0.0])
+            else:
+                grad_dist = np.array([gx / norm, gy / norm])
+        
+        return dist, grad_dist
+
+
+def obstacle_penalty_dense(m_fourier, t_param, K, omegas, obstacles, zeta_obs=2000.0, n_dense=200):
+    """Penalize path entering obstacle + margin zone."""
+    t_dense = np.linspace(t_param[0], t_param[-1], n_dense)
+    dt_dense = t_dense[1] - t_dense[0]
+    targets_dense = generate_targets(m_fourier, t_dense, K, omegas)
+    
+    val = 0.0
+    S_obs = np.zeros((n_dense, 2))
+    
+    for obs in obstacles:
+        margin = obs['margin']
+        for j in range(n_dense):
+            pt = targets_dense[j]
+            dist, grad_dist = signed_distance_to_obstacle(pt, obs)
+            penetration = margin - dist
+            if penetration > 0:
+                val += dt_dense * zeta_obs * penetration**2
+                S_obs[j, 0] += -zeta_obs * 2.0 * penetration * grad_dist[0]
+                S_obs[j, 1] += -zeta_obs * 2.0 * penetration * grad_dist[1]
+    
+    g = np.zeros(4*K + 2)
+    g[0] = dt_dense * np.sum(S_obs[:, 0])
+    g[1] = dt_dense * np.sum(S_obs[:, 1])
+    for kk in range(K):
+        cos_v = np.cos(omegas[kk] * t_dense)
+        sin_v = np.sin(omegas[kk] * t_dense)
+        g[2 + 4*kk] = dt_dense * np.dot(S_obs[:, 0], cos_v)
+        g[3 + 4*kk] = dt_dense * np.dot(S_obs[:, 0], sin_v)
+        g[4 + 4*kk] = dt_dense * np.dot(S_obs[:, 1], cos_v)
+        g[5 + 4*kk] = dt_dense * np.dot(S_obs[:, 1], sin_v)
+    
+    return val, g
