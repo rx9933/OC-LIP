@@ -334,7 +334,7 @@ def oed_objective_and_grad(c0, m_fourier, Vh, mesh, prior, simulation_times,
             grad += grad_init
     
 
-    J = -EIG_val   # + pen_val 
+    J = -EIG_val + pen_val
     
     _elapsed = time.time() - _t0
     
