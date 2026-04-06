@@ -394,3 +394,136 @@ def nn_input_dim(r_wind):
         Input dimension
     """
     return 2 + 2 * r_wind**2 + 2
+
+def construct_curved_wind(mesh, pattern='vortex', strength=1.0,
+                          center=(0.5, 0.5), mean_vx=0.5, mean_vy=0.0,
+                          safe_max=2.0):
+    """
+    Construct curved, divergence-free wind field via stream function.
+    
+    Patterns: 'vortex', 'dipole', 'shear', 'channel', 'converging'
+    """
+    Xh = dl.VectorFunctionSpace(mesh, 'Lagrange', 1)
+    xy = mesh.coordinates()
+    x = xy[:, 0]
+    y = xy[:, 1]
+    
+    cx, cy = center
+    
+    # Wall damping: sin(pi*y) vanishes at y=0 and y=1
+    wall = np.sin(np.pi * y)
+    dwall_dy = np.pi * np.cos(np.pi * y)
+    
+    if pattern == 'vortex':
+        sigma = 0.3
+        r2 = (x - cx)**2 + (y - cy)**2
+        psi_raw = -strength * np.exp(-r2 / (2 * sigma**2))
+        dpsi_raw_dx = strength * (x - cx) / sigma**2 * np.exp(-r2 / (2 * sigma**2))
+        dpsi_raw_dy = strength * (y - cy) / sigma**2 * np.exp(-r2 / (2 * sigma**2))
+    
+    elif pattern == 'dipole':
+        sigma = 0.25
+        r2_left  = (x - 0.3)**2 + (y - cy)**2
+        r2_right = (x - 0.7)**2 + (y - cy)**2
+        psi_raw = -strength * (np.exp(-r2_left / (2*sigma**2)) 
+                              - np.exp(-r2_right / (2*sigma**2)))
+        dpsi_raw_dx = strength * ((x-0.3)/sigma**2 * np.exp(-r2_left/(2*sigma**2))
+                                 -(x-0.7)/sigma**2 * np.exp(-r2_right/(2*sigma**2)))
+        dpsi_raw_dy = strength * ((y-cy)/sigma**2 * np.exp(-r2_left/(2*sigma**2))
+                                 -(y-cy)/sigma**2 * np.exp(-r2_right/(2*sigma**2)))
+    
+    elif pattern == 'shear':
+        psi_raw = strength * np.cos(np.pi * x)
+        dpsi_raw_dx = -strength * np.pi * np.sin(np.pi * x)
+        dpsi_raw_dy = np.zeros_like(x)
+    
+    elif pattern == 'channel':
+        sigma = 0.2
+        amplitude = 0.5 * strength
+        r2 = (x - cx)**2 + (y - cy)**2
+        psi_raw = amplitude * np.exp(-r2 / (2*sigma**2))
+        dpsi_raw_dx = -amplitude * (x-cx)/sigma**2 * np.exp(-r2/(2*sigma**2))
+        dpsi_raw_dy = -amplitude * (y-cy)/sigma**2 * np.exp(-r2/(2*sigma**2))
+    
+    elif pattern == 'converging':
+        psi_raw = strength * x * (y - 0.5)
+        dpsi_raw_dx = strength * (y - 0.5)
+        dpsi_raw_dy = strength * x
+    
+    # Apply wall damping
+    dpsi_dx = dpsi_raw_dx * wall
+    dpsi_dy = dpsi_raw_dy * wall + psi_raw * dwall_dy
+    
+    # Velocity: vx = dpsi/dy + mean_vx,  vy = -dpsi/dx + mean_vy
+    vx = dpsi_dy + mean_vx
+    vy = -dpsi_dx + mean_vy
+    
+    # Build dolfin function
+    Vh_scalar = dl.FunctionSpace(mesh, 'Lagrange', 1)
+    v2d = dl.vertex_to_dof_map(Vh_scalar)
+    
+    vx_func = dl.Function(Vh_scalar)
+    vy_func = dl.Function(Vh_scalar)
+    vx_vals = vx_func.vector().get_local()
+    vy_vals = vy_func.vector().get_local()
+    for i in range(len(xy)):
+        vx_vals[v2d[i]] = vx[i]
+        vy_vals[v2d[i]] = vy[i]
+    vx_func.vector().set_local(vx_vals)
+    vy_func.vector().set_local(vy_vals)
+    
+    v_func = dl.Function(Xh)
+    fa = dl.FunctionAssigner(Xh, [Vh_scalar, Vh_scalar])
+    fa.assign(v_func, [vx_func, vy_func])
+    
+    # Safety: cap maximum velocity
+    max_speed = np.sqrt(vx**2 + vy**2).max()
+    if max_speed > safe_max:
+        print(f"  Rescaling wind: max speed {max_speed:.2f} -> {safe_max:.2f}")
+        v_func.vector()[:] *= safe_max / max_speed
+    
+    return v_func
+
+def compute_velocity_field_opposing_inlets(mesh, speed_left=4.0, speed_top=3.0, Re_val=300.0):
+    """
+    Navier-Stokes with opposing inlets: left wall (eastward) + top wall (downward).
+    Creates complex interaction zone with competing flow regions.
+    """
+    Xh = dl.VectorFunctionSpace(mesh, 'Lagrange', 2)
+    Wh = dl.FunctionSpace(mesh, 'Lagrange', 1)
+    mixed_element = ufl.MixedElement([Xh.ufl_element(), Wh.ufl_element()])
+    XW = dl.FunctionSpace(mesh, mixed_element)
+
+    Re = dl.Constant(Re_val)
+    
+    # Left wall: eastward parabolic
+    g_left = dl.Expression(('s*x[1]*(1.0-x[1])', '0.0'), degree=2, s=speed_left)
+    # Top wall: downward parabolic
+    g_top = dl.Expression(('0.0', '-s*x[0]*(1.0-x[0])'), degree=2, s=speed_top)
+    
+    bcs = []
+    bcs.append(dl.DirichletBC(XW.sub(0), g_left, "near(x[0], 0.0)"))
+    bcs.append(dl.DirichletBC(XW.sub(0), g_top, "near(x[1], 1.0)"))
+    bcs.append(dl.DirichletBC(XW.sub(0), dl.Constant((0.0, 0.0)),
+               "near(x[1], 0.0)"))
+    bcs.append(dl.DirichletBC(XW.sub(1), dl.Constant(0), q_boundary, 'pointwise'))
+
+    vq = dl.Function(XW)
+    (v, q) = ufl.split(vq)
+    (v_test, q_test) = dl.TestFunctions(XW)
+
+    def strain(v):
+        return ufl.sym(ufl.grad(v))
+
+    F = ((2./Re)*ufl.inner(strain(v), strain(v_test))
+         + ufl.inner(ufl.nabla_grad(v)*v, v_test)
+         - q*ufl.div(v_test)
+         + ufl.div(v)*q_test) * ufl.dx
+
+    dl.solve(F == 0, vq, bcs,
+             solver_parameters={"newton_solver":
+                                 {"relative_tolerance": 1e-4,
+                                  "maximum_iterations": 100}})
+
+    vh = dl.project(v, Xh)
+    return vh
