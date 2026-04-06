@@ -56,7 +56,11 @@ def eval_fn_and_grad_P1(func, mesh, pt_xy):
     """
     global _cached_bbt
     pt = dl.Point(float(pt_xy[0]), float(pt_xy[1]))
-    val = func(pt)
+    try:
+        val = func(pt)
+    except RuntimeError:
+        # Point is outside mesh (inside a building) — no measurement
+        return 0.0, np.array([0.0, 0.0])
 
     if _cached_bbt is None:
         _cached_bbt = mesh.bounding_box_tree()
