@@ -43,10 +43,11 @@ REL_NOISE = 0.01
 # PENALTY PARAMETERS
 # =============================================================================
 ZETA_BDY = 1000.0      # Boundary penalty weight
-ZETA_SPEED = 500.0     # Speed penalty weight
+ZETA_SPEED = 1000    # Speed penalty weight
 ZETA_ACCEL = 250.0
-V_MAX = 0.5            # Max sensor speed (domain units / time unit)
-A_MAX = .5 
+V_MAX = 0.6            # Max sensor speed (domain units / time unit)
+# config.py
+A_MAX = 3.0            # was 0.5 — too restrictive
 
 # =============================================================================
 # OPTIMIZATION PARAMETERS
@@ -55,6 +56,7 @@ OPT_MAXITER = 200
 OPT_MAXFUN = 800
 OPT_FTOL = 1e-12
 OPT_MAXLS = 40
+OPT_GTOL = 10.0
 
 # =============================================================================
 # SPECTRAL WIND PARAMETERS
