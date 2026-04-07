@@ -336,7 +336,7 @@ def process_training_data(filename, output_file='data/mq_data_reduced.npz',
         v_noise_var=v_noise_var,
         v_coeff_noise_var=v_coeffs_noise_var,
         v_mean_noise_var=v_means_noise_var,
-        
+         
         # POD metadata
         pod_basis=pod_data['U'],
         pod_singular_values=pod_data['s'],
