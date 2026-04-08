@@ -2,8 +2,8 @@
 OED experiment on hIPPYlib ad_20 mesh with buildings.
 
 Lid-driven cavity wind around two rectangular buildings.
-Runs both multi-start (10 runs) and multi-refinement (10 runs)
-on the same wind field for comparison.
+Wind boundary conditions use Fourier perturbations along each wall
+for diverse wind fields in training data generation.
 """
 
 import numpy as np
@@ -53,6 +53,10 @@ BUILDINGS = [
     {'type': 'rectangle', 'lower': (0.61, 0.61), 'upper': (0.74, 0.84), 'margin': 0.03},
 ]
 
+# Fourier wall perturbation config
+N_WALL_MODES = 5
+WALL_PERTURB_STDS = [0.6, 0.4, 0.3, 0.2, 0.1]
+
 
 # ================================================================
 # SETUP FUNCTIONS
@@ -63,19 +67,42 @@ def v_boundary(x, on_boundary):
 def q_boundary(x, on_boundary):
     return x[0] < dl.DOLFIN_EPS and x[1] < dl.DOLFIN_EPS
 
-def setup_buildings_mesh():
-    """Load ad_20 mesh with buildings, compute lid-driven cavity wind."""
+def setup_buildings_mesh(speed_left=1.0, speed_right=1.0, coeffs_left=None, coeffs_right=None):
+    """Load ad_20 mesh with buildings, compute lid-driven cavity wind.
+
+    Parameters
+    ----------
+    speed_left : float
+        Baseline speed of upward flow on left wall
+    speed_right : float
+        Baseline speed of downward flow on right wall
+    coeffs_left : array-like or None
+        5 Fourier perturbation coefficients for left wall
+    coeffs_right : array-like or None
+        5 Fourier perturbation coefficients for right wall
+    """
+    if coeffs_left is None:
+        coeffs_left = [0.0] * 5
+    if coeffs_right is None:
+        coeffs_right = [0.0] * 5
+
     mesh = dl.refine(dl.Mesh(MESH_FILE))
     Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
 
-    # Lid-driven cavity wind (same as hIPPYlib tutorial)
     Xh = dl.VectorFunctionSpace(mesh, 'Lagrange', 2)
     Wh = dl.FunctionSpace(mesh, 'Lagrange', 1)
     mixed_element = ufl.MixedElement([Xh.ufl_element(), Wh.ufl_element()])
     XW = dl.FunctionSpace(mesh, mixed_element)
 
     Re = dl.Constant(1e2)
-    g = dl.Expression(('0.0', '(x[0] < 1e-14) - (x[0] > 1 - 1e-14)'), degree=1)
+    g = dl.Expression((
+        '0.0',
+        '(x[0]<eps) * (bl*4*x[1]*(1-x[1]) + a1l*sin(pi*x[1]) + a2l*sin(2*pi*x[1]) + a3l*sin(3*pi*x[1]) + a4l*sin(4*pi*x[1]) + a5l*sin(5*pi*x[1]))'
+        ' + (x[0]>1-eps) * (-br*4*x[1]*(1-x[1]) + a1r*sin(pi*x[1]) + a2r*sin(2*pi*x[1]) + a3r*sin(3*pi*x[1]) + a4r*sin(4*pi*x[1]) + a5r*sin(5*pi*x[1]))'
+    ), degree=4, eps=1e-14, pi=np.pi,
+       bl=speed_left, br=speed_right,
+       a1l=coeffs_left[0], a2l=coeffs_left[1], a3l=coeffs_left[2], a4l=coeffs_left[3], a5l=coeffs_left[4],
+       a1r=coeffs_right[0], a2r=coeffs_right[1], a3r=coeffs_right[2], a4r=coeffs_right[3], a5r=coeffs_right[4])
 
     bc1 = dl.DirichletBC(XW.sub(0), g, v_boundary)
     bc2 = dl.DirichletBC(XW.sub(1), dl.Constant(0), q_boundary, 'pointwise')
@@ -114,9 +141,7 @@ def setup_prior_buildings(Vh):
 # ================================================================
 def buildings_objective_and_grad(c0, m, Vh, mesh, prior, wind_velocity,
                                   K, omegas, eigsolver):
-    """
-    OED objective with all penalties including obstacle avoidance.
-    """
+    """OED objective with all penalties including obstacle avoidance."""
     _t0 = time.time()
 
     prob, msft, tgts = build_problem(
@@ -133,22 +158,18 @@ def buildings_objective_and_grad(c0, m, Vh, mesh, prior, wind_velocity,
     grad = -grad_eig.copy()
     pen_val = 0.0
 
-    # Boundary penalty
     bdy_val, grad_bdy = boundary_penalty_dense(m, OBSERVATION_TIMES, K, omegas)
     pen_val += bdy_val
     grad += grad_bdy
 
-    # Speed penalty
     spd_val, grad_spd = speed_penalty_dense(m, OBSERVATION_TIMES, K, omegas)
     pen_val += spd_val
     grad += grad_spd
 
-    # Acceleration penalty
     acc_val, grad_acc = acceleration_penalty_dense(m, OBSERVATION_TIMES, K, omegas)
     pen_val += acc_val
     grad += grad_acc
 
-    # IC penalty
     if c0 is not None:
         ic_val, grad_ic = initial_position_penalty_dense(
             m, OBSERVATION_TIMES, K, omegas, c0
@@ -156,7 +177,6 @@ def buildings_objective_and_grad(c0, m, Vh, mesh, prior, wind_velocity,
         pen_val += ic_val
         grad += grad_ic
 
-    # Obstacle penalty (BUILDINGS)
     obs_val, grad_obs = obstacle_penalty_dense(
         m, OBSERVATION_TIMES, K, omegas, BUILDINGS
     )
@@ -189,7 +209,6 @@ def run_multi_start(mesh, Vh, prior, wind_velocity, omegas):
         print(f"{'=' * 60}")
         sys.stdout.flush()
 
-        # Create initial guess
         if i % 2 == 0:
             m0 = create_initial_guess(C0, K, seed=seed)
         else:
@@ -199,7 +218,6 @@ def run_multi_start(mesh, Vh, prior, wind_velocity, omegas):
         eigsolver = CachedEigensolver()
         t0 = time.time()
 
-        # Initial EIG
         _, _, eig_init, _, _, _ = buildings_objective_and_grad(
             C0, m0, Vh, mesh, prior, wind_velocity, K, omegas, eigsolver
         )
@@ -222,16 +240,13 @@ def run_multi_start(mesh, Vh, prior, wind_velocity, omegas):
             objective, m0,
             jac=True, method='L-BFGS-B', bounds=BOUNDS,
             options={'maxiter': OPT_MAXITER, 'disp': False,
-                     'ftol': OPT_FTOL, 'gtol': 1e-5,
+                     'ftol': OPT_FTOL, 'gtol': OPT_GTOL,
                      'maxls': OPT_MAXLS, 'maxfun': OPT_MAXFUN}
         )
 
         m_opt = result.x
-        print(f"    [{i+1:2d}] Optimizer: {result.message}, nit={result.nit}, nfev={result.nfev}")
-        print(f"    [{i+1:2d}] Gradient has NaN: {np.any(np.isnan(result.jac))}")
         elapsed = time.time() - t0
 
-        # Final EIG
         eigsolver.reset()
         _, _, eig_opt, _, _, _ = buildings_objective_and_grad(
             C0, m_opt, Vh, mesh, prior, wind_velocity, K, omegas, eigsolver
@@ -257,7 +272,6 @@ def run_multi_start(mesh, Vh, prior, wind_velocity, omegas):
             'nfev': result.nfev,
         })
 
-        # Checkpoint
         with open('buildings_multi_start_results.pkl', 'wb') as f:
             pickle.dump({
                 'results': results,
@@ -325,7 +339,7 @@ def create_initial_guess_K1(c0, seed=None):
     omegas = fourier_frequencies(TY, K_stage)
     m0 = np.zeros(4 * K_stage + 2)
 
-    radius = np.random.uniform(0.03, 0.15)  # Smaller radius for buildings
+    radius = np.random.uniform(0.03, 0.15)
     eccentricity = np.random.uniform(0, 0.5)
     a = radius * (1 + eccentricity)
     b = radius * (1 - eccentricity)
@@ -357,9 +371,7 @@ def run_refinement_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity,
     bounds = make_bounds(stage_K)
     reset_cached_bbt()
 
-    # Custom objective for this K
     def stage_objective(m):
-        _t0 = time.time()
         prob, msft, tgts = build_problem(
             m, Vh, prior, SIMULATION_TIMES, OBSERVATION_TIMES,
             wind_velocity, stage_K, omegas, NOISE_VARIANCE, mesh
@@ -395,7 +407,6 @@ def run_refinement_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity,
         J = -EIG_val + pen_val
         return J, grad, EIG_val, pen_val
 
-    # Initial EIG
     _, _, eig_init, _ = stage_objective(m0)[:4]
 
     grad_norms = []
@@ -414,13 +425,11 @@ def run_refinement_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity,
         objective, m0,
         jac=True, method='L-BFGS-B', bounds=bounds,
         options={'maxiter': OPT_MAXITER, 'disp': False,
-                 'ftol': OPT_FTOL, 'gtol': 1e-5,
+                 'ftol': OPT_FTOL, 'gtol': OPT_GTOL,
                  'maxls': OPT_MAXLS, 'maxfun': OPT_MAXFUN}
     )
 
     m_opt = result.x
-
-    # Final evaluation
     J_opt, _, eig_opt, pen_opt = stage_objective(m_opt)
 
     if len(grad_norms) > 1:
@@ -467,7 +476,6 @@ def run_multi_refinement(mesh, Vh, prior, wind_velocity, omegas):
         stages = []
         shared_eigsolver = CachedEigensolver()
 
-        # Stage 1: K=1
         print(f"\n    Stage 1: K=1 (6 parameters)")
         sys.stdout.flush()
         m0_K1 = create_initial_guess_K1(C0, seed=seed)
@@ -475,7 +483,6 @@ def run_multi_refinement(mesh, Vh, prior, wind_velocity, omegas):
                                        wind_velocity, i, shared_eigsolver)
         stages.append(stage1)
 
-        # Stage 2: K=2
         print(f"\n    Stage 2: K=2 (10 parameters)")
         sys.stdout.flush()
         m0_K2 = pad_solution(stage1['m_opt'], 1, 2)
@@ -483,7 +490,6 @@ def run_multi_refinement(mesh, Vh, prior, wind_velocity, omegas):
                                        wind_velocity, i, shared_eigsolver)
         stages.append(stage2)
 
-        # Stage 3: K=3
         print(f"\n    Stage 3: K=3 (14 parameters)")
         sys.stdout.flush()
         m0_K3 = pad_solution(stage2['m_opt'], 2, 3)
@@ -504,7 +510,6 @@ def run_multi_refinement(mesh, Vh, prior, wind_velocity, omegas):
             'total_time': elapsed,
         })
 
-        # Checkpoint
         with open('buildings_multi_refinement_results.pkl', 'wb') as f:
             pickle.dump({
                 'results': results,
@@ -546,7 +551,6 @@ def plot_buildings_results():
     omegas = fourier_frequencies(TY, K)
     t_dense = np.linspace(OBSERVATION_TIMES[0], OBSERVATION_TIMES[-1], 200)
 
-    # Load mesh for concentration background
     mesh = dl.refine(dl.Mesh(MESH_FILE))
     Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
     ic_expr = dl.Expression(
@@ -564,11 +568,9 @@ def plot_buildings_results():
             w = xmax - xmin
             h = ymax - ymin
             m = b['margin']
-            # Building body
             rect = patches.Rectangle((xmin, ymin), w, h,
                                       color='gray', alpha=0.8, zorder=4)
             ax.add_patch(rect)
-            # Margin
             rect_m = patches.Rectangle((xmin-m, ymin-m), w+2*m, h+2*m,
                                         color='gray', alpha=0.2, linestyle='--',
                                         fill=True, zorder=3)
@@ -576,26 +578,23 @@ def plot_buildings_results():
 
     os.makedirs('buildings_plots', exist_ok=True)
 
-    # Plot multi-start if available
+    # Multi-start per-run plots
     if os.path.exists('buildings_multi_start_results.pkl'):
         with open('buildings_multi_start_results.pkl', 'rb') as f:
             ms_data = pickle.load(f)
         ms_results = ms_data['results']
         colors = plt.cm.tab10(np.linspace(0, 1, len(ms_results)))
 
-        # Per-run plots
         for i, r in enumerate(ms_results):
             fig, ax = plt.subplots(1, 1, figsize=(8, 7))
             ax.tricontourf(coords[:, 0], coords[:, 1], ic_arr,
                             levels=20, cmap='viridis', alpha=0.6)
             draw_buildings(ax)
 
-            # Initial path
             path_init = generate_targets(r['m0'], t_dense, K, omegas)
             ax.plot(path_init[:, 0], path_init[:, 1], 'r--', lw=2, alpha=0.7,
                     label=f'Initial (EIG={r["eig_init"]:.2f})')
 
-            # Optimal path
             path_opt = generate_targets(r['m_opt'], t_dense, K, omegas)
             sensors_opt = generate_targets(r['m_opt'], OBSERVATION_TIMES, K, omegas)
             ax.plot(path_opt[:, 0], path_opt[:, 1], 'b-', lw=2.5, alpha=0.9,
@@ -644,15 +643,13 @@ def plot_buildings_results():
         plt.close()
         print(f"  Saved: buildings_plots/ms_all_paths.png")
 
-    # Plot multi-refinement if available
-   # Plot multi-refinement if available
+    # Multi-refinement per-run plots
     if os.path.exists('buildings_multi_refinement_results.pkl'):
         with open('buildings_multi_refinement_results.pkl', 'rb') as f:
             mr_data = pickle.load(f)
         mr_results = mr_data['results']
         colors = plt.cm.tab10(np.linspace(0, 1, len(mr_results)))
 
-        # Per-run refinement plots with time-colored sensors
         for i, r in enumerate(mr_results):
             fig, ax = plt.subplots(1, 1, figsize=(8, 7))
             ax.tricontourf(coords[:, 0], coords[:, 1], ic_arr,
@@ -698,8 +695,6 @@ def plot_buildings_results():
             plt.savefig(f'buildings_plots/mr_run_{i+1:02d}.png', dpi=200)
             plt.close()
             print(f"  Saved: buildings_plots/mr_run_{i+1:02d}.png")
-
-        # All K=3 paths
 
         # All K=3 paths
         fig, ax = plt.subplots(1, 1, figsize=(8, 7))
@@ -749,7 +744,6 @@ def plot_buildings_results():
                             levels=20, cmap='viridis', alpha=0.6)
             draw_buildings(ax)
 
-        # Left: multi-start
         sorted_ms = np.argsort(ms_eigs)[::-1]
         for rank, idx in enumerate(sorted_ms):
             r = ms_results[idx]
@@ -764,7 +758,6 @@ def plot_buildings_results():
         ax1.set_title(f'Multi-Start (spread={ms_spread:.2f})')
         ax1.legend(loc='upper left', fontsize=6)
 
-        # Right: multi-refinement
         sorted_mr = np.argsort(mr_eigs)[::-1]
         for rank, idx in enumerate(sorted_mr):
             r = mr_results[idx]
@@ -802,17 +795,25 @@ def main():
     print(f"  c0: ({C0[0]}, {C0[1]})")
     print(f"  R_MODES: {R_MODES}")
     print(f"  N_STARTS: {N_STARTS}")
+    print(f"  Wall perturbation modes: {N_WALL_MODES}")
+    print(f"  Perturbation stds: {WALL_PERTURB_STDS}")
     print("=" * 60)
     sys.stdout.flush()
 
-    # Setup
+    # Setup wind with Fourier perturbations
     print("\nSetting up buildings mesh and wind field...")
     sys.stdout.flush()
-    mesh, Vh, wind_velocity = setup_buildings_mesh()
+    speed_left = max(0.1, np.random.normal(1.0, 0.5))
+    speed_right = max(0.1, np.random.normal(1.0, 0.5))
+    coeffs_left = np.array([np.random.normal(0, s) for s in WALL_PERTURB_STDS])
+    coeffs_right = np.array([np.random.normal(0, s) for s in WALL_PERTURB_STDS])
+    print(f"  Wind speeds: left={speed_left:.3f}, right={speed_right:.3f}")
+    print(f"  Perturbations: |left|={np.linalg.norm(coeffs_left):.3f}, |right|={np.linalg.norm(coeffs_right):.3f}")
+    mesh, Vh, wind_velocity = setup_buildings_mesh(speed_left, speed_right, coeffs_left, coeffs_right)
     prior = setup_prior_buildings(Vh)
     omegas = fourier_frequencies(TY, K)
     print(f"  Mesh DOFs: {Vh.dim()}")
-    print(f"  Wind: lid-driven cavity (Re=100)")
+    print(f"  Wind: lid-driven cavity (Re=100) + Fourier perturbations")
     sys.stdout.flush()
 
     # Run experiments
@@ -821,7 +822,6 @@ def main():
     parser.add_argument('--mode', type=str, default='both',
                         choices=['multi_start', 'multi_refinement', 'both', 'plot'],
                         help='Which experiment to run')
-    # Handle Jupyter
     if any('ipykernel' in arg for arg in sys.argv):
         args = argparse.Namespace(mode='both')
     else:
