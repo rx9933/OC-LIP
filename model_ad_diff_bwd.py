@@ -24,6 +24,26 @@ import os
 sys.path.append( os.environ.get('HIPPYLIB_BASE_DIR', "../../") )
 from hippylib import *
 
+
+from hippylib import TimeDependentVector as OriginalTimeDependentVector
+
+# Replace with your correct version
+class TimeDependentVector(OriginalTimeDependentVector):
+    def initialize(self, Vh):
+        """Initialize all the snapshots to be compatible with the function space :code:`Vh`."""
+        template_fun = dl.Function(Vh)
+        self.data = []
+        for i in range(self.nsteps):
+            self.data.append(template_fun.vector().copy())
+        self._mpi_comm = Vh.mesh().mpi_comm()
+        self.Vh = Vh
+
+# Replace the imported class
+import hippylib
+hippylib.TimeDependentVector = TimeDependentVector
+
+
+
 class SpaceTimePointwiseStateObservation(Misfit):
     def __init__(self, Vh,
                  observation_times,
