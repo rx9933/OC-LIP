@@ -73,6 +73,114 @@ def l2_training(model,loss_func,train_loader, validation_loader,\
 
     return model, train_history
 
+
+def l2_training(model, loss_func, train_loader, validation_loader,
+                optimizer, lr_scheduler=None, n_epochs=100, verbose=False, ic_penalty=True):
+    device = next(model.parameters()).device
+
+    train_history = {}
+    train_history['train_loss_l2'] = []
+    train_history['train_consistency_loss'] = []
+    train_history['train_total_loss'] = []
+    
+    train_history['validation_loss_l2'] = []
+    train_history['validation_consistency_loss'] = []
+    train_history['validation_total_loss'] = []
+
+    for epoch in range(n_epochs):
+        # Training
+        train_total = 0
+        train_mse = 0
+        train_consistency = 0
+        model.train()
+        
+        for batch in train_loader:
+            m, u = batch  # m = input (q), u = target (path coefficients)
+            m = m.to(device)
+            u = u.to(device)
+            u_pred = model(m)
+            
+            if ic_penalty:
+                # Assuming loss_func returns (total_loss, mse_loss, consistency_loss)
+                # Or modify your loss_func to return components
+                total_loss, mse_loss, consistency_loss = loss_func(u_pred, u, m)
+                train_consistency += consistency_loss.item() * m.shape[0]
+            else:              
+                total_loss = loss_func(u_pred, u)
+                mse_loss = total_loss
+                consistency_loss = torch.tensor(0.0)
+            
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+            
+            train_total += total_loss.item() * m.shape[0]
+            train_mse += mse_loss.item() * m.shape[0]
+            
+            del u, m, u_pred
+            torch.cuda.empty_cache()
+        
+        # Normalize training losses
+        n_train = len(train_loader.dataset)
+        train_total /= n_train
+        train_mse /= n_train
+        train_consistency /= n_train
+        
+        train_history['train_total_loss'].append(train_total)
+        train_history['train_loss_l2'].append(train_mse)
+        train_history['train_consistency_loss'].append(train_consistency)
+        
+        # Validation
+        with torch.no_grad():
+            model.eval()
+            val_total = 0
+            val_mse = 0
+            val_consistency = 0
+            
+            for batch in validation_loader:
+                m, u = batch
+                m = m.to(device)
+                u = u.to(device)
+                u_pred = model(m)
+                
+                if ic_penalty:
+                    total_loss, mse_loss, consistency_loss = loss_func(u_pred, u, m)
+                    val_consistency += consistency_loss.item() * m.shape[0]
+                else:
+                    total_loss = loss_func(u_pred, u)
+                    mse_loss = total_loss
+                    consistency_loss = torch.tensor(0.0)
+                
+                val_total += total_loss.item() * m.shape[0]
+                val_mse += mse_loss.item() * m.shape[0]
+                
+                del u, m, u_pred
+                torch.cuda.empty_cache()
+        
+        # Normalize validation losses
+        n_val = len(validation_loader.dataset)
+        val_total /= n_val
+        val_mse /= n_val
+        val_consistency /= n_val
+        
+        train_history['validation_total_loss'].append(val_total)
+        train_history['validation_loss_l2'].append(val_mse)
+        train_history['validation_consistency_loss'].append(val_consistency)
+        
+        # Update learning rate if lr_scheduler is provided
+        if lr_scheduler is not None:
+            lr_scheduler.step(val_total)
+        
+        if epoch % 20 == 0 and verbose:
+            print('=' * 60)
+            print(f'Epoch {epoch+1}/{n_epochs}')
+            print(f'  Train - Total: {train_total:.6e}, MSE: {train_mse:.6e}, Consistency: {train_consistency:.6e}')
+            print(f'  Val   - Total: {val_total:.6e}, MSE: {val_mse:.6e}, Consistency: {val_consistency:.6e}')
+            print('=' * 60)
+
+    return model, train_history
+
+
 def h1_training(model,loss_func_l2,loss_func_jac,train_loader, validation_loader,\
                      optimizer,lr_scheduler=None,n_epochs = 100, verbose = False,\
                      mode="forward", jac_weight = 1.0):
