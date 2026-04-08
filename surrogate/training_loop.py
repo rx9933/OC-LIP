@@ -19,11 +19,12 @@ def main():
     small_epochs = 100
 
     # l2
-    '''
+    
     os.system(
     f"python train_rbno_oc.py "
     f"--data_type 'xv' " # data = using the position of the drone + POD reduced velocity field
     f"--rQ {args.rQ} "
+    f"--dQ {args.dQ} "
     f"--dM {args.dM} "
     f"--n_train {args.n_train} "
     f"--n_test {args.n_test} "
@@ -54,6 +55,6 @@ def main():
     f"--data_dir {args.data_dir} "
     f"--epochs {large_epochs} " 
     )
-    
+    '''
 if __name__ == "__main__":
     main()
