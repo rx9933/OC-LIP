@@ -2,6 +2,78 @@ import matplotlib.pyplot as plt
 import os
 import argparse
 import numpy as np
+def plot_training_history_with_consistency(model_name, history, n_train, data_dir, args):
+    """
+    Plot training history including consistency loss
+    """
+    epochs = range(1, len(history['train_total_loss']) + 1)
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # Plot 1: Total Loss
+    axes[0, 0].semilogy(epochs, history['train_total_loss'], 'b-', label='Train Total')
+    axes[0, 0].semilogy(epochs, history['validation_total_loss'], 'r-', label='Validation Total')
+    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_ylabel('Total Loss')
+    axes[0, 0].set_title(f'{model_name} - Total Loss (n_train={n_train})')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # Plot 2: MSE Loss
+    axes[0, 1].semilogy(epochs, history['train_loss_l2'], 'b-', label='Train MSE')
+    axes[0, 1].semilogy(epochs, history['validation_loss_l2'], 'r-', label='Validation MSE')
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('MSE Loss')
+    axes[0, 1].set_title(f'{model_name} - Coefficient MSE')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # Plot 3: Consistency Loss (if available)
+    if 'train_consistency_loss' in history and len(history['train_consistency_loss']) > 0:
+        axes[1, 0].semilogy(epochs, history['train_consistency_loss'], 'b-', label='Train Consistency')
+        axes[1, 0].semilogy(epochs, history['validation_consistency_loss'], 'r-', label='Validation Consistency')
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].set_ylabel('Consistency Loss')
+        axes[1, 0].set_title('Initial Position Consistency Loss')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+    else:
+        axes[1, 0].text(0.5, 0.5, 'Consistency loss not tracked', 
+                       ha='center', va='center', transform=axes[1, 0].transAxes)
+        axes[1, 0].set_title('Consistency Loss (Not Available)')
+    
+    # Plot 4: Loss ratio (consistency / total)
+    if 'train_consistency_loss' in history and len(history['train_consistency_loss']) > 0:
+        train_ratio = [c/t if t > 0 else 0 for c, t in zip(history['train_consistency_loss'], history['train_total_loss'])]
+        val_ratio = [c/t if t > 0 else 0 for c, t in zip(history['validation_consistency_loss'], history['validation_total_loss'])]
+        
+        axes[1, 1].plot(epochs, train_ratio, 'b-', label='Train Ratio')
+        axes[1, 1].plot(epochs, val_ratio, 'r-', label='Validation Ratio')
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('Consistency/Total Ratio')
+        axes[1, 1].set_title('Consistency Loss Contribution')
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3)
+        axes[1, 1].set_ylim([0, 1])
+    else:
+        axes[1, 1].text(0.5, 0.5, 'Consistency ratio not available', 
+                       ha='center', va='center', transform=axes[1, 1].transAxes)
+        axes[1, 1].set_title('Consistency Ratio (Not Available)')
+    
+    plt.tight_layout()
+    
+    # Save the figure
+    plot_save_name = f"training_history_{args.data_type}_ntrain{args.n_train}.png"
+    plot_save_path = os.path.join(data_dir, plot_save_name)
+    plt.savefig(plot_save_path, dpi=150, bbox_inches='tight')
+    print(f"Training history plot saved to {plot_save_path}")
+    plt.close()
+    
+    # Also save to text file for later analysis
+    history_save_path = os.path.join(data_dir, f"training_history_{args.data_type}_ntrain{args.n_train}.npz")
+    np.savez(history_save_path, **history)
+    print(f"Training history data saved to {history_save_path}")
+    
 def plot_training_history(model_name, history, n_train, data_dir, args):
     """
     Plot training history with error handling.
