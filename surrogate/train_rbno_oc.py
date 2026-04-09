@@ -1,5 +1,7 @@
 import os, sys
 import torch
+from utils import *
+
 import numpy as np
 from torch.utils.data import DataLoader
 import matplotlib.patches as mpatches
@@ -29,13 +31,13 @@ parser.add_argument('-dQ', '--dQ', type=int, default=22, help="dQ")
 parser.add_argument('-rM', '--rM', type=int, default=12, help="rM")
 parser.add_argument('-dM', '--dM', type=int, default=14, help="dM")
 parser.add_argument('-data_type', '--data_type', type=str, default='xv', help="xv or xvspectral")
-parser.add_argument('-n_train', '--n_train', type=int, default=800, help="Number of training data")
+parser.add_argument('-n_train', '--n_train', type=int, default=1600, help="Number of training data")
 parser.add_argument('-n_test', '--n_test', type=int, default=100, help="Number of test data")
-parser.add_argument('-n_data', '--n_data', type=int, default=945, help="Max number of total data")
+parser.add_argument('-n_data', '--n_data', type=int, default=1945, help="Max number of total data")
 parser.add_argument('-plot_samples', '--plot_samples', type=int, default=4, help="Number of test samples to plot")
 parser.add_argument('-data_dir', '--data_dir', type=str, default='data/', help="data directory")
 parser.add_argument('-save_dir', '--save_dir', type=str, default='./models/rbno/', help="Directory to save models")
-parser.add_argument('-epochs', '--epochs', type=int, default=1000, help="epochs")
+parser.add_argument('-epochs', '--epochs', type=int, default=100, help="epochs")
 args = parser.parse_args()
 
 batch_size = 32
@@ -62,10 +64,10 @@ def draw_buildings(ax):
         h = ymax - ymin
         m = b['margin']
         rect = mpatches.Rectangle((xmin, ymin), w, h,
-                                   color='gray', alpha=0.8, zorder=4)
+                                   color='black', alpha=0.8, zorder=4)
         ax.add_patch(rect)
         rect_m = mpatches.Rectangle((xmin-m, ymin-m), w+2*m, h+2*m,
-                                     color='gray', alpha=0.2, linestyle='--',
+                                     color='black', alpha=0.2, linestyle='--',
                                      fill=True, zorder=3)
         ax.add_patch(rect_m)
 
@@ -114,7 +116,7 @@ class PathNetwork(torch.nn.Module):
 # ================================================================
 # LOAD DATA
 # ================================================================
-mq_data_dict = np.load(args.data_dir + 'mq_data_reduced.npz', allow_pickle=True)
+mq_data_dict = np.load(args.data_dir + 'mq_data_reduced_more_diverse.npz', allow_pickle=True)
 
 m_data = mq_data_dict['m']
 
@@ -151,7 +153,7 @@ device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 ################################################################################
 # MODEL
 ################################################################################
-base_model = GenericDense(input_dim=args.dQ, hidden_layer_dim=2*args.dQ, output_dim=12).to(device)
+base_model = GenericDenseSkip(input_dim=args.dQ, hidden_layer_dim=2*args.dQ, output_dim=12).to(device)
 model = PathNetwork(base_model, K=K, omegas=omegas, t0=T_1).to(device)
 
 print(f"\nModel architecture:")
@@ -218,17 +220,25 @@ with torch.no_grad():
 
 with open(os.path.join(args.data_dir, "test_errors.txt"), "a") as f:
     f.write(f"data_type={args.data_type}, n_train={args.n_train}, rel_error={rel_error_test}, mse={mse}\n")
-
 # ================================================================
-# PLOT TEST EXAMPLES
+# PLOT TEST EXAMPLES - USING CORRECT MESH
 # ================================================================
 print("\n" + "="*60)
 print("PLOTTING TEST EXAMPLES")
 print("="*60)
 
-mesh = dl.UnitSquareMesh(NX, NY)
+# Use the same mesh as in data generation (refined from ad_20.xml)
+MESH_FILE = 'generate_data/ad_20.xml'  # Make sure this path is correct
+try:
+    mesh = dl.refine(dl.Mesh(MESH_FILE))
+    print(f"Loaded mesh from {MESH_FILE} with {mesh.num_cells()} cells")
+except:
+    # Fallback to unit square if file not found
+    print(f"Warning: Could not load {MESH_FILE}, using UnitSquareMesh({NX}, {NY})")
+    mesh = dl.UnitSquareMesh(NX, NY)
+
 Vh_scalar = dl.FunctionSpace(mesh, 'Lagrange', 1)
-V_vec = dl.VectorFunctionSpace(mesh, 'Lagrange', 1)
+V_vec_deg2 = dl.VectorFunctionSpace(mesh, 'Lagrange', 2)  # For reconstruction
 
 n_plot = min(args.plot_samples, len(m_test))
 test_indices = np.arange(1, n_plot)
@@ -237,6 +247,46 @@ print(f"Plotting {n_plot} test examples...")
 
 fig = plt.figure(figsize=(20, 5*n_plot))
 plot_idx = 1
+
+def plot_wind_field_on_grid(ax, wind_velocity, resolution=30):
+    """Plot wind field on a regular grid - exact copy from working example."""
+    # Create regular grid
+    x = np.linspace(0, 1, resolution)
+    y = np.linspace(0, 1, resolution)
+    X, Y = np.meshgrid(x, y)
+    
+    # Evaluate wind velocity at grid points
+    U = np.zeros_like(X)
+    V = np.zeros_like(Y)
+    
+    for i in range(resolution):
+        for j in range(resolution):
+            point = np.array([X[i,j], Y[i,j]])
+            try:
+                # Try to evaluate at point
+                val = wind_velocity(point)
+                U[i,j] = val[0]
+                V[i,j] = val[1]
+            except:
+                # If point is outside, use nearest valid value
+                closest_point = np.clip(point, 0.001, 0.999)
+                try:
+                    val = wind_velocity(closest_point)
+                    U[i,j] = val[0]
+                    V[i,j] = val[1]
+                except:
+                    U[i,j] = 0
+                    V[i,j] = 0
+    
+    # Compute speed
+    speed = np.sqrt(U**2 + V**2)
+    
+    # Plot quiver with color
+    quiver = ax.quiver(X, Y, U, V, speed, 
+                       cmap='coolwarm', alpha=0.7, 
+                       scale=15, width=0.003)
+    
+    return quiver
 
 for sample_idx in test_indices:
     m_true = m_test[sample_idx].cpu().numpy()
@@ -266,11 +316,22 @@ for sample_idx in test_indices:
         eig_true = mq_data_dict['eig_opt'][clean_idx]
         eig_init = mq_data_dict['eig_init'][clean_idx]
 
-    else:
+    else:  # args.data_type == 'xv'
         x_init = q_input[:2]
         v_coeff = q_input[2:]
         wind_coeffs = None
-        wind_field = None
+        
+        # Get stored wind DOFs
+        wind_dofs = mq_data_dict['wind_dofs'][clean_idx]
+        
+        # Reconstruct wind field using the working example's method
+        try:
+            wind_field = reconstruct_wind_from_dofs(mesh, wind_dofs)
+            print(f"  Successfully reconstructed wind field (DOFs: {len(wind_dofs)})")
+        except Exception as e:
+            print(f"  Warning: Could not reconstruct wind field: {e}")
+            wind_field = None
+        
         eig_true = mq_data_dict['eig_K3'][clean_idx]
         eig_init = mq_data_dict['eig_K0'][clean_idx]
 
@@ -301,36 +362,43 @@ for sample_idx in test_indices:
     except Exception as e:
         print(f"  WARNING: compute_eig_for_path failed: {e}")
 
-    # ---- Subplot 1: Wind field ----
+    # ---- Subplot 1: Wind field (using working example's plotting function) ----
     ax1 = plt.subplot(n_plot, 4, plot_idx)
     plot_idx += 1
-    draw_buildings(ax1)
-
+    
+    # Draw buildings
+    for b in BUILDINGS:
+        xmin, ymin = b['lower']
+        xmax, ymax = b['upper']
+        w = xmax - xmin
+        h = ymax - ymin
+        m = b['margin']
+        rect = mpatches.Rectangle((xmin, ymin), w, h,
+                                   color='black', alpha=0.8, zorder=4)
+        ax1.add_patch(rect)
+        rect_m = mpatches.Rectangle((xmin-m, ymin-m), w+2*m, h+2*m,
+                                     color='black', alpha=0.2, linestyle='--',
+                                     fill=True, zorder=3)
+        ax1.add_patch(rect_m)
+    
+    # Plot wind field using the same function as working example
     if wind_field is not None:
-        vx_func, vy_func = wind_field.split(deepcopy=True)
-        coords = mesh.coordinates()
-        vx_vals = vx_func.vector().get_local()
-        vy_vals = vy_func.vector().get_local()
-
-        nx, ny = 40, 40
-        xi = np.linspace(0, 1, nx)
-        yi = np.linspace(0, 1, ny)
-        X, Y = np.meshgrid(xi, yi)
-
-        from scipy.interpolate import griddata
-        Vx_grid = griddata((coords[:, 0], coords[:, 1]), vx_vals, (X, Y), method='linear')
-        Vy_grid = griddata((coords[:, 0], coords[:, 1]), vy_vals, (X, Y), method='linear')
-
-        speed = np.sqrt(Vx_grid**2 + Vy_grid**2)
-        strm = ax1.streamplot(X, Y, Vx_grid, Vy_grid, color=speed,
-                             cmap='viridis', linewidth=1, density=1.2)
-        plt.colorbar(strm.lines, ax=ax1, label='Speed')
+        try:
+            quiver = plot_wind_field_on_grid(ax1, wind_field, resolution=25)
+            plt.colorbar(quiver, ax=ax1, fraction=0.046, pad=0.04, label='Wind speed')
+        except Exception as e:
+            print(f"  Warning: Failed to plot wind field: {e}")
+            ax1.text(0.5, 0.5, f'Wind field plot error:\n{str(e)[:50]}',
+                    ha='center', va='center', transform=ax1.transAxes, fontsize=8)
     else:
-        ax1.text(0.5, 0.5, 'Wind field (POD input)',
+        ax1.text(0.5, 0.5, 'Wind field unavailable',
                 ha='center', va='center', transform=ax1.transAxes, fontsize=10)
 
-    ax1.plot(x_init[0], x_init[1], 'go', markersize=8, label='Start')
-    ax1.set_xlim([0, 1]); ax1.set_ylim([0, 1])
+    # Mark start position
+    ax1.plot(x_init[0], x_init[1], 'go', markersize=8, label='Start', zorder=10)
+    
+    ax1.set_xlim([0, 1])
+    ax1.set_ylim([0, 1])
     ax1.set_aspect('equal')
     ax1.set_title(f'Sample {sample_idx}: Wind Field')
     ax1.grid(True, alpha=0.3)
@@ -354,7 +422,8 @@ for sample_idx in test_indices:
     ax2.scatter(pred_sensors[:, 0], pred_sensors[:, 1], c=range(n_obs),
                 cmap='Reds', s=15, alpha=0.6, edgecolors='red', linewidths=0.3, zorder=6)
 
-    ax2.set_xlim([0, 1]); ax2.set_ylim([0, 1])
+    ax2.set_xlim([0, 1])
+    ax2.set_ylim([0, 1])
     ax2.set_aspect('equal')
     ax2.set_title(f'Sample {sample_idx}: Path Comparison')
     ax2.legend(fontsize=7, loc='upper left')
