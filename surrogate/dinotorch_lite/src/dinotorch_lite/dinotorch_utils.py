@@ -311,7 +311,51 @@ class GenericDense(nn.Module):
         x = self.output(x)
         return x
 
-
+class GenericDenseSkip(nn.Module):
+    def __init__(self, input_dim=50, hidden_layer_dim=256, output_dim=20):
+        super().__init__()
+        
+        # Store dimensions for skip connections
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        
+        # Main layers
+        self.hidden1 = nn.Linear(input_dim, hidden_layer_dim)
+        self.act1 = nn.GELU()
+        self.hidden2 = nn.Linear(hidden_layer_dim, hidden_layer_dim)
+        self.act2 = nn.GELU()
+        self.hidden3 = nn.Linear(hidden_layer_dim, hidden_layer_dim)
+        self.act3 = nn.GELU()
+        self.hidden4 = nn.Linear(hidden_layer_dim, hidden_layer_dim)
+        self.act4 = nn.GELU()
+        self.output = nn.Linear(hidden_layer_dim, output_dim)
+        
+        # Skip connection adapters to match dimensions
+        # These project the first two input features to the output dimension
+        self.skip1_adapter = nn.Linear(1, output_dim)  # For first input point
+        self.skip2_adapter = nn.Linear(1, output_dim)  # For second input point
+        
+    def forward(self, x):
+        # Main path
+        main = self.act1(self.hidden1(x))
+        main = self.act2(self.hidden2(main))
+        main = self.act3(self.hidden3(main))
+        main = self.act4(self.hidden4(main))
+        main = self.output(main)
+        
+        # Skip connections from first two input points to output
+        # Extract first two features from input
+        x1 = x[:, 0:1]  # First input point (feature)
+        x2 = x[:, 1:2]  # Second input point (feature)
+        
+        # Project them to output dimension
+        skip1 = self.skip1_adapter(x1)
+        skip2 = self.skip2_adapter(x2)
+        
+        # Combine main path with skip connections
+        output = main + skip1 + skip2
+        
+        return output
 def squared_f_norm(A):
     return torch.sum(torch.square(A))
 
