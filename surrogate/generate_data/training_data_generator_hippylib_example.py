@@ -38,7 +38,7 @@ dl.set_log_active(False)
 # ================================================================
 # CONFIGURATION
 # ================================================================
-MESH_FILE = '/home/fredkhouri/hippylib/applications/ad_diff/ad_20.xml'
+MESH_FILE = 'ad_20.xml'#'/home/fredkhouri/hippylib/applications/ad_diff/ad_20.xml'
 
 # Buildings
 BUILDINGS = [
@@ -46,12 +46,15 @@ BUILDINGS = [
     {'type': 'rectangle', 'lower': (0.61, 0.61), 'upper': (0.74, 0.84), 'margin': 0.03},
 ]
 
-# Wind velocity priors
-WIND_SPEED_LEFT_MEAN = 1.0
-WIND_SPEED_LEFT_STD = 0.5
-WIND_SPEED_RIGHT_MEAN = 1.0
-WIND_SPEED_RIGHT_STD = 0.5
+scale_mean = 4
 
+# Wind velocity priors
+WIND_SPEED_LEFT_MEAN = 1.0 * scale_mean
+WIND_SPEED_LEFT_STD = 0.5 * scale_mean
+WIND_SPEED_RIGHT_MEAN = 1.0 * scale_mean
+WIND_SPEED_RIGHT_STD = 0.5 * scale_mean
+
+scale_perturb = scale_mean*2
 # Fourier perturbation priors (5 modes per wall, decaying amplitude)
 N_WALL_MODES = 5
 WALL_PERTURB_STDS = [0.6, 0.4, 0.3, 0.2, 0.1]
@@ -251,11 +254,13 @@ def pad_solution(m_opt, K_from, K_to):
 
 def objective_with_obstacles(m, c0, Vh, mesh, prior, wind_velocity,
                               stage_K, omegas, eigsolver):
+
     """OED objective with all penalties including obstacles."""
     prob, msft, tgts = build_problem(
         m, Vh, prior, SIMULATION_TIMES, OBSERVATION_TIMES,
         wind_velocity, stage_K, omegas, NOISE_VARIANCE, mesh
     )
+
     EIG_val, grad_eig, lmbda, V = compute_eig_gradient(
         m, prob, prior, R_MODES, eigsolver, Vh, mesh,
         SIMULATION_TIMES, OBSERVATION_TIMES, stage_K, omegas,
@@ -293,9 +298,11 @@ def run_single_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity, eigsolver,
     eval_count = [0]
 
     def objective(m):
+
         J, grad, eig_val, pen_val = objective_with_obstacles(
             m, c0, Vh, mesh, prior, wind_velocity, stage_K, omegas, eigsolver
         )
+
         eval_count[0] += 1
         if eval_count[0] % 5 == 1:
             print(f"      [{sample_idx+1:4d}|K={stage_K}] eval {eval_count[0]:3d}  "
@@ -329,8 +336,24 @@ def run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, sample_idx):
     """Run K=1 -> K=2 -> K=3 multi-refinement."""
     shared_eigsolver = CachedEigensolver()
 
+
+
+    omegas_K1 = fourier_frequencies(TY, 1)
+    m_initial = create_initial_guess_K1(c0)
+    
+    # Build problem and compute EIG for initial guess
+    prob_initial, _, _ = build_problem(
+        m_initial, Vh, prior, SIMULATION_TIMES, OBSERVATION_TIMES,
+        wind_velocity, 1, omegas_K1, NOISE_VARIANCE, mesh
+    )
+    
+    # Compute EIG for initial guess
+    _, _, eig_initial = shared_eigsolver.solve(prob_initial, prior, R_MODES)
+
+
     # Stage 1: K=1
     m0_K1 = create_initial_guess_K1(c0)
+
     m1_opt, eig_K1, pen_K1, nfev_K1 = run_single_stage(
         1, m0_K1, c0, mesh, Vh, prior, wind_velocity, shared_eigsolver, sample_idx
     )
@@ -351,6 +374,7 @@ def run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, sample_idx):
 
     return {
         'm_opt': m3_opt.copy(),
+        'eig_K0': eig_initial,
         'eig_K1': eig_K1,
         'eig_K2': eig_K2,
         'eig_K3': eig_K3,
@@ -426,12 +450,13 @@ def generate_training_data():
             mesh, Vh, wind_velocity = setup_buildings_mesh(
                 speed_left, speed_right, coeffs_left, coeffs_right
             )
+    
             prior = setup_prior_buildings(Vh)
-
+    
             # Extract full wind field as numpy array (for POD later)
             wind_dof_vector = wind_velocity.vector().get_local().copy()
 
-            # Run multi-refinement
+
             result = run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, i)
 
             elapsed = time.time() - t0
@@ -459,6 +484,7 @@ def generate_training_data():
                 'nn_input': nn_input.copy(),
                 'wind_dof_vector': wind_dof_vector,
                 'm_opt': result['m_opt'].copy(),
+                'eig_K0': result['eig_K0'],
                 'eig_K1': result['eig_K1'],
                 'eig_K2': result['eig_K2'],
                 'eig_K3': result['eig_K3'],
