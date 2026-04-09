@@ -57,7 +57,7 @@ WIND_SPEED_RIGHT_STD = 0.5 * scale_mean
 scale_perturb = scale_mean*2
 # Fourier perturbation priors (5 modes per wall, decaying amplitude)
 N_WALL_MODES = 5
-WALL_PERTURB_STDS = [0.6, 0.4, 0.3, 0.2, 0.1]
+WALL_PERTURB_STDS = [0.6, 0.4, 0.3, 0.2, 0.1] * scale_perturb
 
 # Drone position prior
 DRONE_POS_MEAN = 0.5
