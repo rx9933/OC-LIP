@@ -1,13 +1,14 @@
 """
 Training data generation for OED on hIPPYlib buildings mesh.
 
-CHANGES FROM PREVIOUS VERSION:
-  1. MULTI-START: 10 random initial guesses per sample (was 1)
-  2. BEST SELECTION: keep the multi-refinement with highest EIG per sample
-  3. N_MULTI_STARTS configurable via --n_starts argument
-  4. Saves all 10 EIG values per sample for diagnostics
-  5. Default n_samples increased (target 8000 total across jobs)
-  6. Prints EIG spread per sample to monitor basin diversity
+CHANGES:
+  1. NO FOURIER WALL PERTURBATIONS — wind BCs are pure parabolic shear
+     Left wall:  vy = speed_left * 4*y*(1-y)
+     Right wall: vy = -speed_right * 4*y*(1-y)
+     Wind diversity comes from varying speed_left, speed_right ~ N(mean, std)
+  2. MULTI-START: 10 random initial guesses per sample, keep best EIG
+  3. wind_params is now 2D [speed_left, speed_right] (was 12D)
+  4. NN input dim is now 4 (2 speeds + 2 position) before POD
 """
 
 import numpy as np
@@ -53,18 +54,11 @@ BUILDINGS = [
     {'type': 'rectangle', 'lower': (0.61, 0.61), 'upper': (0.74, 0.84), 'margin': 0.03},
 ]
 
-scale_mean = 4
-
-# Wind velocity priors
-WIND_SPEED_LEFT_MEAN = 1.0 * scale_mean
-WIND_SPEED_LEFT_STD = 0.5 * scale_mean
-WIND_SPEED_RIGHT_MEAN = 1.0 * scale_mean
-WIND_SPEED_RIGHT_STD = 0.5 * scale_mean
-
-scale_perturb = scale_mean*2
-# Fourier perturbation priors (5 modes per wall, decaying amplitude)
-N_WALL_MODES = 5
-WALL_PERTURB_STDS = [0.6, 0.4, 0.3, 0.2, 0.1] * scale_perturb
+# Wind velocity priors — SIMPLIFIED: just two speeds, no perturbations
+WIND_SPEED_LEFT_MEAN = 4.0
+WIND_SPEED_LEFT_STD = 2.0
+WIND_SPEED_RIGHT_MEAN = 4.0
+WIND_SPEED_RIGHT_STD = 2.0
 
 # Drone position prior
 DRONE_POS_MEAN = 0.5
@@ -72,7 +66,7 @@ DRONE_POS_STD = 0.15
 DRONE_POS_BOUNDS = (0.12, 0.88)
 
 # ================================================================
-# CHANGE 3: n_starts argument added
+# ARGUMENTS
 # ================================================================
 import argparse
 
@@ -93,7 +87,7 @@ else:
 
 
 # ================================================================
-# SETUP FUNCTIONS (UNCHANGED)
+# SETUP FUNCTIONS
 # ================================================================
 def v_boundary(x, on_boundary):
     return on_boundary
@@ -102,13 +96,14 @@ def q_boundary(x, on_boundary):
     return x[0] < dl.DOLFIN_EPS and x[1] < dl.DOLFIN_EPS
 
 
-def setup_buildings_mesh(speed_left=1.0, speed_right=1.0, coeffs_left=None, coeffs_right=None):
-    """Load ad_20 mesh, solve Navier-Stokes with Fourier-perturbed wall BCs."""
-    if coeffs_left is None:
-        coeffs_left = [0.0] * 5
-    if coeffs_right is None:
-        coeffs_right = [0.0] * 5
-
+def setup_buildings_mesh(speed_left=1.0, speed_right=1.0):
+    """
+    Load ad_20 mesh, solve Navier-Stokes with parabolic wall BCs.
+    
+    SIMPLIFIED: no Fourier perturbations. Just parabolic shear:
+      Left wall:  vy = speed_left * 4*y*(1-y)
+      Right wall: vy = -speed_right * 4*y*(1-y)
+    """
     mesh = dl.refine(dl.Mesh(MESH_FILE))
     Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
 
@@ -118,14 +113,14 @@ def setup_buildings_mesh(speed_left=1.0, speed_right=1.0, coeffs_left=None, coef
     XW = dl.FunctionSpace(mesh, mixed_element)
 
     Re = dl.Constant(1e2)
+
+    # SIMPLIFIED: pure parabolic profile, no Fourier terms
     g = dl.Expression((
         '0.0',
-        '(x[0]<eps) * (bl*4*x[1]*(1-x[1]) + a1l*sin(pi*x[1]) + a2l*sin(2*pi*x[1]) + a3l*sin(3*pi*x[1]) + a4l*sin(4*pi*x[1]) + a5l*sin(5*pi*x[1]))'
-        ' + (x[0]>1-eps) * (-br*4*x[1]*(1-x[1]) + a1r*sin(pi*x[1]) + a2r*sin(2*pi*x[1]) + a3r*sin(3*pi*x[1]) + a4r*sin(4*pi*x[1]) + a5r*sin(5*pi*x[1]))'
-    ), degree=4, eps=1e-14, pi=np.pi,
-       bl=speed_left, br=speed_right,
-       a1l=coeffs_left[0], a2l=coeffs_left[1], a3l=coeffs_left[2], a4l=coeffs_left[3], a5l=coeffs_left[4],
-       a1r=coeffs_right[0], a2r=coeffs_right[1], a3r=coeffs_right[2], a4r=coeffs_right[3], a5r=coeffs_right[4])
+        '(x[0]<eps) * (bl*4*x[1]*(1-x[1]))'
+        ' + (x[0]>1-eps) * (-br*4*x[1]*(1-x[1]))'
+    ), degree=4, eps=1e-14,
+       bl=speed_left, br=speed_right)
 
     bc1 = dl.DirichletBC(XW.sub(0), g, v_boundary)
     bc2 = dl.DirichletBC(XW.sub(1), dl.Constant(0), q_boundary, 'pointwise')
@@ -159,18 +154,13 @@ def setup_prior_buildings(Vh):
 
 
 # ================================================================
-# SAMPLING FUNCTIONS (UNCHANGED)
+# SAMPLING FUNCTIONS
 # ================================================================
 def sample_wind_speeds():
+    """Sample baseline wall speeds from Gaussian priors."""
     sl = max(0.1, np.random.normal(WIND_SPEED_LEFT_MEAN, WIND_SPEED_LEFT_STD))
     sr = max(0.1, np.random.normal(WIND_SPEED_RIGHT_MEAN, WIND_SPEED_RIGHT_STD))
     return sl, sr
-
-
-def sample_wall_perturbations():
-    coeffs_left = np.array([np.random.normal(0, s) for s in WALL_PERTURB_STDS])
-    coeffs_right = np.array([np.random.normal(0, s) for s in WALL_PERTURB_STDS])
-    return coeffs_left, coeffs_right
 
 
 def point_in_building(x, y, margin_extra=0.02):
@@ -196,7 +186,7 @@ def sample_drone_position():
 
 
 # ================================================================
-# OPTIMIZATION HELPER FUNCTIONS (UNCHANGED except logging)
+# OPTIMIZATION HELPER FUNCTIONS
 # ================================================================
 def fix_c0_in_m(m, c0, K_stage, omegas):
     t0_obs = OBSERVATION_TIMES[0]
@@ -289,7 +279,6 @@ def objective_with_obstacles(m, c0, Vh, mesh, prior, wind_velocity,
     return J, grad, EIG_val, pen_val
 
 
-# CHANGE: added start_idx parameter for logging
 def run_single_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity, eigsolver, sample_idx,
                      start_idx=None):
     omegas = fourier_frequencies(TY, stage_K)
@@ -332,7 +321,6 @@ def run_single_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity, eigsolver,
     return m_opt, eig_opt, pen_opt, result.nfev
 
 
-# CHANGE: accepts m0_K1 and start_idx as arguments
 def run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, sample_idx,
                          m0_K1=None, start_idx=None):
     """Run K=1 -> K=2 -> K=3 multi-refinement from a single initial guess."""
@@ -384,7 +372,7 @@ def run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, sample_idx,
 
 
 # ================================================================
-# CHANGE 1 & 2: MULTI-START WRAPPER (NEW FUNCTION)
+# MULTI-START WRAPPER
 # ================================================================
 def run_multi_start_multi_refinement(c0, mesh, Vh, prior, wind_velocity,
                                       sample_idx, n_starts=10):
@@ -424,7 +412,6 @@ def run_multi_start_multi_refinement(c0, mesh, Vh, prior, wind_velocity,
             all_eigs.append(np.nan)
             sys.stdout.flush()
 
-    # Store diagnostics
     if best_result is not None:
         best_result['all_eigs'] = np.array(all_eigs)
         best_result['n_starts'] = n_starts
@@ -451,22 +438,21 @@ def generate_training_data():
 
     print("=" * 70)
     print("  TRAINING DATA GENERATION: HIPPYLIB BUILDINGS EXAMPLE")
-    print("  WITH MULTI-START MULTI-REFINEMENT")
+    print("  PARABOLIC SHEAR WIND (NO FOURIER PERTURBATIONS) + MULTI-START")
     print("=" * 70)
     print(f"  Job ID:          {job_id}")
     print(f"  Samples:         {n_samples}")
     print(f"  Multi-starts:    {n_starts} per sample")
     print(f"  Output:          {output_file}")
+    print(f"  Wind BCs:        parabolic shear (no Fourier perturbations)")
     print(f"  Wind prior:      sl ~ N({WIND_SPEED_LEFT_MEAN}, {WIND_SPEED_LEFT_STD}^2)")
     print(f"                   sr ~ N({WIND_SPEED_RIGHT_MEAN}, {WIND_SPEED_RIGHT_STD}^2)")
-    print(f"  Wall modes:      {N_WALL_MODES} per wall")
-    print(f"  Perturb stds:    {WALL_PERTURB_STDS}")
     print(f"  Drone prior:     c0 ~ N({DRONE_POS_MEAN}, {DRONE_POS_STD}^2), avoid buildings")
     print(f"  Multi-refinement: K=1 -> K=2 -> K=3 (x{n_starts} starts)")
     print(f"  R_MODES:         {R_MODES}")
-    print(f"  NN input dim:    {2 + 2*N_WALL_MODES + 2} (2 speeds + {2*N_WALL_MODES} perturb + 2 position)")
+    print(f"  Wind params dim: 2 (speed_left, speed_right)")
+    print(f"  NN input dim:    4 (2 speeds + 2 position) + POD")
     print(f"  NN output dim:   {4*K + 2} (Fourier path coefficients)")
-    print(f"  Est. cost:       ~{n_starts}x more PDE solves per sample vs single-start")
     print("=" * 70)
     sys.stdout.flush()
 
@@ -488,29 +474,29 @@ def generate_training_data():
         seed = base_seed + i
         np.random.seed(seed)
 
+        # Sample wind speeds (NO perturbation coefficients)
         speed_left, speed_right = sample_wind_speeds()
-        coeffs_left, coeffs_right = sample_wall_perturbations()
+
+        # Sample drone position
         c0 = sample_drone_position()
 
         print(f"\n  [{i+1:4d}/{n_samples}] seed={seed}  "
               f"sl={speed_left:.3f}  sr={speed_right:.3f}  "
-              f"|cl|={np.linalg.norm(coeffs_left):.3f}  "
-              f"|cr|={np.linalg.norm(coeffs_right):.3f}  "
               f"c0=({c0[0]:.3f}, {c0[1]:.3f})")
         sys.stdout.flush()
 
         t0 = time.time()
 
         try:
-            # Solve Navier-Stokes ONCE per sample (shared across all starts)
+            # Solve Navier-Stokes (SIMPLIFIED: no perturbation coefficients)
             mesh, Vh, wind_velocity = setup_buildings_mesh(
-                speed_left, speed_right, coeffs_left, coeffs_right
+                speed_left, speed_right
             )
 
             prior = setup_prior_buildings(Vh)
             wind_dof_vector = wind_velocity.vector().get_local().copy()
 
-            # CHANGE 1 & 2: Multi-start (was single run_multi_refinement)
+            # Multi-start multi-refinement
             result = run_multi_start_multi_refinement(
                 c0, mesh, Vh, prior, wind_velocity, i, n_starts=n_starts
             )
@@ -520,11 +506,10 @@ def generate_training_data():
 
             elapsed = time.time() - t0
 
-            wind_params = np.concatenate([
-                [speed_left, speed_right],
-                coeffs_left,
-                coeffs_right
-            ])
+            # SIMPLIFIED: wind_params is just 2D now
+            wind_params = np.array([speed_left, speed_right])
+
+            # NN input: wind_params + drone position = 4D (before POD)
             nn_input = np.concatenate([wind_params, c0])
 
             sample = {
@@ -532,8 +517,6 @@ def generate_training_data():
                 'c_init': c0.copy(),
                 'speed_left': speed_left,
                 'speed_right': speed_right,
-                'coeffs_left': coeffs_left.copy(),
-                'coeffs_right': coeffs_right.copy(),
                 'wind_params': wind_params.copy(),
                 'nn_input': nn_input.copy(),
                 'wind_dof_vector': wind_dof_vector,
@@ -546,7 +529,6 @@ def generate_training_data():
                 'pen_K3': result['pen_K3'],
                 'nfev_total': result['nfev_total'],
                 'time': elapsed,
-                # CHANGE 4: Multi-start diagnostics
                 'all_eigs': result.get('all_eigs', np.array([])),
                 'n_starts': result.get('n_starts', 1),
                 'eig_spread': result.get('eig_spread', 0.0),
@@ -583,8 +565,6 @@ def generate_training_data():
                         'speed_left_std': WIND_SPEED_LEFT_STD,
                         'speed_right_mean': WIND_SPEED_RIGHT_MEAN,
                         'speed_right_std': WIND_SPEED_RIGHT_STD,
-                        'n_wall_modes': N_WALL_MODES,
-                        'wall_perturb_stds': WALL_PERTURB_STDS,
                     },
                     'drone_prior': {
                         'mean': DRONE_POS_MEAN,
@@ -592,7 +572,7 @@ def generate_training_data():
                         'bounds': DRONE_POS_BOUNDS,
                     },
                     'n_dofs': n_dofs,
-                    'nn_input_dim': 2 + 2*N_WALL_MODES + 2,
+                    'nn_input_dim': 4,  # 2 speeds + 2 position
                     'nn_output_dim': 4*K + 2,
                 }, f)
             print(f"  (checkpoint: {len(training_data)} samples saved to {output_file})")
