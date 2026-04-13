@@ -3,12 +3,9 @@ Training data generation for OED on hIPPYlib buildings mesh.
 
 CHANGES:
   1. NO FOURIER WALL PERTURBATIONS — wind BCs are pure parabolic shear
-     Left wall:  vy = speed_left * 4*y*(1-y)
-     Right wall: vy = -speed_right * 4*y*(1-y)
-     Wind diversity comes from varying speed_left, speed_right ~ N(mean, std)
   2. MULTI-START: 10 random initial guesses per sample, keep best EIG
-  3. wind_params is now 2D [speed_left, speed_right] (was 12D)
-  4. NN input dim is now 4 (2 speeds + 2 position) before POD
+  3. wind_params is now 2D [speed_left, speed_right]
+  4. DIAGNOSTIC PLOT at the end showing wind field, all paths, best selection
 """
 
 import numpy as np
@@ -48,19 +45,16 @@ dl.set_log_active(False)
 # ================================================================
 MESH_FILE = 'ad_20.xml'
 
-# Buildings
 BUILDINGS = [
     {'type': 'rectangle', 'lower': (0.26, 0.16), 'upper': (0.49, 0.39), 'margin': 0.03},
     {'type': 'rectangle', 'lower': (0.61, 0.61), 'upper': (0.74, 0.84), 'margin': 0.03},
 ]
 
-# Wind velocity priors — SIMPLIFIED: just two speeds, no perturbations
 WIND_SPEED_LEFT_MEAN = 4.0
 WIND_SPEED_LEFT_STD = 2.0
 WIND_SPEED_RIGHT_MEAN = 4.0
 WIND_SPEED_RIGHT_STD = 2.0
 
-# Drone position prior
 DRONE_POS_MEAN = 0.5
 DRONE_POS_STD = 0.15
 DRONE_POS_BOUNDS = (0.12, 0.88)
@@ -75,14 +69,10 @@ if any('ipykernel' in arg for arg in sys.argv):
                               output_prefix='hippylib_training_data')
 else:
     parser = argparse.ArgumentParser(description='Generate OED training data (hIPPYlib buildings)')
-    parser.add_argument('--job_id', type=int, default=0,
-                        help='Job ID for parallel runs')
-    parser.add_argument('--n_samples', type=int, default=1000,
-                        help='Number of samples to generate')
-    parser.add_argument('--n_starts', type=int, default=10,
-                        help='Number of multi-start initial guesses per sample')
-    parser.add_argument('--output_prefix', type=str, default='hippylib_training_data',
-                        help='Prefix for output file')
+    parser.add_argument('--job_id', type=int, default=0)
+    parser.add_argument('--n_samples', type=int, default=1000)
+    parser.add_argument('--n_starts', type=int, default=10)
+    parser.add_argument('--output_prefix', type=str, default='hippylib_training_data')
     args, _ = parser.parse_known_args()
 
 
@@ -97,13 +87,7 @@ def q_boundary(x, on_boundary):
 
 
 def setup_buildings_mesh(speed_left=1.0, speed_right=1.0):
-    """
-    Load ad_20 mesh, solve Navier-Stokes with parabolic wall BCs.
-    
-    SIMPLIFIED: no Fourier perturbations. Just parabolic shear:
-      Left wall:  vy = speed_left * 4*y*(1-y)
-      Right wall: vy = -speed_right * 4*y*(1-y)
-    """
+    """Load ad_20 mesh, solve Navier-Stokes with parabolic wall BCs."""
     mesh = dl.refine(dl.Mesh(MESH_FILE))
     Vh = dl.FunctionSpace(mesh, "Lagrange", 1)
 
@@ -114,7 +98,6 @@ def setup_buildings_mesh(speed_left=1.0, speed_right=1.0):
 
     Re = dl.Constant(1e2)
 
-    # SIMPLIFIED: pure parabolic profile, no Fourier terms
     g = dl.Expression((
         '0.0',
         '(x[0]<eps) * (bl*4*x[1]*(1-x[1]))'
@@ -147,7 +130,6 @@ def setup_buildings_mesh(speed_left=1.0, speed_right=1.0):
 
 
 def setup_prior_buildings(Vh):
-    """BiLaplacian prior (same as hIPPYlib tutorial)."""
     prior = BiLaplacianPrior(Vh, GAMMA, DELTA, robin_bc=True)
     prior.mean = dl.interpolate(dl.Constant(0.25), Vh).vector()
     return prior
@@ -157,7 +139,6 @@ def setup_prior_buildings(Vh):
 # SAMPLING FUNCTIONS
 # ================================================================
 def sample_wind_speeds():
-    """Sample baseline wall speeds from Gaussian priors."""
     sl = max(0.1, np.random.normal(WIND_SPEED_LEFT_MEAN, WIND_SPEED_LEFT_STD))
     sr = max(0.1, np.random.normal(WIND_SPEED_RIGHT_MEAN, WIND_SPEED_RIGHT_STD))
     return sl, sr
@@ -292,7 +273,6 @@ def run_single_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity, eigsolver,
         J, grad, eig_val, pen_val = objective_with_obstacles(
             m, c0, Vh, mesh, prior, wind_velocity, stage_K, omegas, eigsolver
         )
-
         eval_count[0] += 1
         if eval_count[0] % 5 == 1:
             print(f"      [{sample_idx+1:4d}{start_str}|K={stage_K}] eval {eval_count[0]:3d}  "
@@ -309,7 +289,6 @@ def run_single_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity, eigsolver,
     )
 
     m_opt = result.x
-
     _, _, eig_opt, pen_opt = objective_with_obstacles(
         m_opt, c0, Vh, mesh, prior, wind_velocity, stage_K, omegas, eigsolver
     )
@@ -323,9 +302,7 @@ def run_single_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity, eigsolver,
 
 def run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, sample_idx,
                          m0_K1=None, start_idx=None):
-    """Run K=1 -> K=2 -> K=3 multi-refinement from a single initial guess."""
     shared_eigsolver = CachedEigensolver()
-
     omegas_K1 = fourier_frequencies(TY, 1)
 
     if m0_K1 is None:
@@ -337,20 +314,17 @@ def run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, sample_idx,
     )
     _, _, eig_initial = shared_eigsolver.solve(prob_initial, prior, R_MODES)
 
-    # Stage 1: K=1
     m1_opt, eig_K1, pen_K1, nfev_K1 = run_single_stage(
         1, m0_K1, c0, mesh, Vh, prior, wind_velocity, shared_eigsolver, sample_idx,
         start_idx=start_idx
     )
 
-    # Stage 2: K=2
     m0_K2 = pad_solution(m1_opt, 1, 2)
     m2_opt, eig_K2, pen_K2, nfev_K2 = run_single_stage(
         2, m0_K2, c0, mesh, Vh, prior, wind_velocity, shared_eigsolver, sample_idx,
         start_idx=start_idx
     )
 
-    # Stage 3: K=3
     m0_K3 = pad_solution(m2_opt, 2, 3)
     m3_opt, eig_K3, pen_K3, nfev_K3 = run_single_stage(
         3, m0_K3, c0, mesh, Vh, prior, wind_velocity, shared_eigsolver, sample_idx,
@@ -372,17 +346,15 @@ def run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, sample_idx,
 
 
 # ================================================================
-# MULTI-START WRAPPER
+# MULTI-START WRAPPER — now saves ALL paths for plotting
 # ================================================================
 def run_multi_start_multi_refinement(c0, mesh, Vh, prior, wind_velocity,
                                       sample_idx, n_starts=10):
-    """
-    Run n_starts independent multi-refinements from different random initial guesses.
-    Keep the one with the highest final EIG (K=3).
-    """
     best_result = None
     best_eig = -np.inf
+    best_idx = -1
     all_eigs = []
+    all_m_opts = []  # Save all paths for plotting
 
     for s in range(n_starts):
         print(f"    Start {s+1}/{n_starts}:")
@@ -390,18 +362,19 @@ def run_multi_start_multi_refinement(c0, mesh, Vh, prior, wind_velocity,
 
         try:
             m0_K1 = create_initial_guess_K1(c0)
-
             result = run_multi_refinement(
                 c0, mesh, Vh, prior, wind_velocity, sample_idx,
                 m0_K1=m0_K1, start_idx=s
             )
 
             all_eigs.append(result['eig_K3'])
+            all_m_opts.append(result['m_opt'].copy())
 
             is_best = result['eig_K3'] > best_eig
             if is_best:
                 best_eig = result['eig_K3']
                 best_result = result
+                best_idx = s
 
             print(f"    Start {s+1}: EIG_K3={result['eig_K3']:.2f} "
                   f"{'*** BEST ***' if is_best else ''}")
@@ -410,10 +383,13 @@ def run_multi_start_multi_refinement(c0, mesh, Vh, prior, wind_velocity,
         except Exception as e:
             print(f"    Start {s+1}: FAILED ({e})")
             all_eigs.append(np.nan)
+            all_m_opts.append(None)
             sys.stdout.flush()
 
     if best_result is not None:
         best_result['all_eigs'] = np.array(all_eigs)
+        best_result['all_m_opts'] = all_m_opts
+        best_result['best_start_idx'] = best_idx
         best_result['n_starts'] = n_starts
         best_result['eig_spread'] = np.nanmax(all_eigs) - np.nanmin(all_eigs)
 
@@ -425,6 +401,137 @@ def run_multi_start_multi_refinement(c0, mesh, Vh, prior, wind_velocity,
     sys.stdout.flush()
 
     return best_result
+
+
+# ================================================================
+# DIAGNOSTIC PLOTTING
+# ================================================================
+def plot_multi_start_diagnostic(sample, wind_velocity, mesh, c0, save_path):
+    """Plot wind field + all multi-start paths + best highlighted + EIG bar chart."""
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    observation_times = np.linspace(T_1, T_FINAL, 50)
+    omegas = fourier_frequencies(TY, K)
+
+    all_m_opts = sample['all_m_opts']
+    all_eigs = sample['all_eigs']
+    best_idx = sample['best_start_idx']
+    m_best = sample['m_opt']
+
+    fig, axes = plt.subplots(1, 3, figsize=(20, 7))
+
+    # ---- Panel 1: Wind field + all paths ----
+    ax1 = axes[0]
+
+    # Draw buildings
+    for b in BUILDINGS:
+        xmin, ymin = b['lower']
+        xmax, ymax = b['upper']
+        w = xmax - xmin
+        h = ymax - ymin
+        m = b['margin']
+        ax1.add_patch(mpatches.Rectangle((xmin, ymin), w, h, color='black', alpha=0.8, zorder=4))
+        ax1.add_patch(mpatches.Rectangle((xmin-m, ymin-m), w+2*m, h+2*m,
+                     color='black', alpha=0.2, linestyle='--', fill=True, zorder=3))
+
+    # Plot wind field
+    resolution = 25
+    x = np.linspace(0, 1, resolution)
+    y = np.linspace(0, 1, resolution)
+    X, Y = np.meshgrid(x, y)
+    U = np.zeros_like(X)
+    V = np.zeros_like(Y)
+    for i in range(resolution):
+        for j in range(resolution):
+            px, py = X[i,j], Y[i,j]
+            inside = any(b_['lower'][0] <= px <= b_['upper'][0] and
+                        b_['lower'][1] <= py <= b_['upper'][1] for b_ in BUILDINGS)
+            if inside:
+                U[i,j] = np.nan; V[i,j] = np.nan; continue
+            try:
+                val = wind_velocity(np.array([px, py]))
+                U[i,j] = val[0]; V[i,j] = val[1]
+            except:
+                U[i,j] = np.nan; V[i,j] = np.nan
+    speed = np.sqrt(np.nan_to_num(U)**2 + np.nan_to_num(V)**2)
+    mask = ~np.isnan(U)
+    ax1.quiver(X[mask], Y[mask], U[mask], V[mask], speed[mask],
+               cmap='coolwarm', alpha=0.5, scale=15, width=0.003)
+
+    # Plot all paths (faint)
+    colors = plt.cm.tab10(np.linspace(0, 1, len(all_m_opts)))
+    for s, m_opt in enumerate(all_m_opts):
+        if m_opt is None:
+            continue
+        path = generate_targets(m_opt, observation_times, K, omegas)
+        if s == best_idx:
+            ax1.plot(path[:, 0], path[:, 1], '-', color='red', linewidth=3,
+                    label=f'Best (start {s+1}, EIG={all_eigs[s]:.2f})', zorder=8)
+        else:
+            ax1.plot(path[:, 0], path[:, 1], '-', color=colors[s], linewidth=1, alpha=0.5,
+                    label=f'Start {s+1} (EIG={all_eigs[s]:.2f})')
+
+    ax1.plot(c0[0], c0[1], 'go', markersize=12, label='Start (c0)', zorder=10)
+    ax1.set_xlim([0, 1]); ax1.set_ylim([0, 1]); ax1.set_aspect('equal')
+    ax1.set_title(f'Wind + All {len(all_m_opts)} Paths\nsl={sample["speed_left"]:.2f}, sr={sample["speed_right"]:.2f}')
+    ax1.legend(fontsize=6, loc='upper left')
+    ax1.grid(True, alpha=0.3)
+
+    # ---- Panel 2: Best path zoomed with sensor dots ----
+    ax2 = axes[1]
+
+    for b in BUILDINGS:
+        xmin, ymin = b['lower']
+        xmax, ymax = b['upper']
+        w = xmax - xmin
+        h = ymax - ymin
+        m = b['margin']
+        ax2.add_patch(mpatches.Rectangle((xmin, ymin), w, h, color='black', alpha=0.8, zorder=4))
+        ax2.add_patch(mpatches.Rectangle((xmin-m, ymin-m), w+2*m, h+2*m,
+                     color='black', alpha=0.2, linestyle='--', fill=True, zorder=3))
+
+    best_path = generate_targets(m_best, observation_times, K, omegas)
+    n_obs = len(observation_times)
+    ax2.plot(best_path[:, 0], best_path[:, 1], 'r-', linewidth=2.5, label='Best path')
+    ax2.scatter(best_path[:, 0], best_path[:, 1], c=range(n_obs),
+                cmap='Reds', s=25, alpha=0.7, edgecolors='red', linewidths=0.3, zorder=6)
+    ax2.plot(c0[0], c0[1], 'go', markersize=12, label='Start (c0)', zorder=10)
+    ax2.set_xlim([0, 1]); ax2.set_ylim([0, 1]); ax2.set_aspect('equal')
+    ax2.set_title(f'Best Path (Start {best_idx+1})\n'
+                  f'EIG={sample["eig_K3"]:.2f}, pen={sample["pen_K3"]:.4f}')
+    ax2.legend(fontsize=8)
+    ax2.grid(True, alpha=0.3)
+
+    # ---- Panel 3: EIG bar chart for all starts ----
+    ax3 = axes[2]
+
+    valid_mask = ~np.isnan(all_eigs)
+    bar_colors = ['red' if i == best_idx else 'steelblue' for i in range(len(all_eigs))]
+    bars = ax3.bar(range(1, len(all_eigs)+1), all_eigs, color=bar_colors, alpha=0.7)
+
+    for i, (bar, eig) in enumerate(zip(bars, all_eigs)):
+        if not np.isnan(eig):
+            ax3.text(bar.get_x() + bar.get_width()/2., bar.get_height(),
+                    f'{eig:.1f}', ha='center', va='bottom', fontsize=7)
+
+    ax3.set_xlabel('Start Index')
+    ax3.set_ylabel('EIG (K=3)')
+    spread = sample['eig_spread']
+    ax3.set_title(f'Multi-Start EIG Comparison\nSpread={spread:.2f}, Best=Start {best_idx+1}')
+    ax3.grid(True, alpha=0.3, axis='y')
+
+    # Add horizontal lines for reference
+    ax3.axhline(y=sample['eig_K0'], color='orange', linestyle='--', linewidth=1,
+                label=f'Initial EIG={sample["eig_K0"]:.1f}')
+    ax3.axhline(y=np.nanmax(all_eigs), color='red', linestyle=':', linewidth=1,
+                label=f'Best={np.nanmax(all_eigs):.1f}')
+    ax3.legend(fontsize=7)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"  Diagnostic plot saved: {save_path}")
 
 
 # ================================================================
@@ -465,6 +572,10 @@ def generate_training_data():
     print(f"  Mesh DOFs: {n_dofs}")
     sys.stdout.flush()
 
+    # Create plot directory
+    plot_dir = f"../buildings_plots/job{job_id}"
+    os.makedirs(plot_dir, exist_ok=True)
+
     training_data = []
     successful = 0
     failed = 0
@@ -474,10 +585,7 @@ def generate_training_data():
         seed = base_seed + i
         np.random.seed(seed)
 
-        # Sample wind speeds (NO perturbation coefficients)
         speed_left, speed_right = sample_wind_speeds()
-
-        # Sample drone position
         c0 = sample_drone_position()
 
         print(f"\n  [{i+1:4d}/{n_samples}] seed={seed}  "
@@ -488,15 +596,10 @@ def generate_training_data():
         t0 = time.time()
 
         try:
-            # Solve Navier-Stokes (SIMPLIFIED: no perturbation coefficients)
-            mesh, Vh, wind_velocity = setup_buildings_mesh(
-                speed_left, speed_right
-            )
-
+            mesh, Vh, wind_velocity = setup_buildings_mesh(speed_left, speed_right)
             prior = setup_prior_buildings(Vh)
             wind_dof_vector = wind_velocity.vector().get_local().copy()
 
-            # Multi-start multi-refinement
             result = run_multi_start_multi_refinement(
                 c0, mesh, Vh, prior, wind_velocity, i, n_starts=n_starts
             )
@@ -506,10 +609,7 @@ def generate_training_data():
 
             elapsed = time.time() - t0
 
-            # SIMPLIFIED: wind_params is just 2D now
             wind_params = np.array([speed_left, speed_right])
-
-            # NN input: wind_params + drone position = 4D (before POD)
             nn_input = np.concatenate([wind_params, c0])
 
             sample = {
@@ -530,6 +630,8 @@ def generate_training_data():
                 'nfev_total': result['nfev_total'],
                 'time': elapsed,
                 'all_eigs': result.get('all_eigs', np.array([])),
+                'all_m_opts': result.get('all_m_opts', []),
+                'best_start_idx': result.get('best_start_idx', 0),
                 'n_starts': result.get('n_starts', 1),
                 'eig_spread': result.get('eig_spread', 0.0),
             }
@@ -545,6 +647,14 @@ def generate_training_data():
                   f"[{elapsed:.0f}s]")
             sys.stdout.flush()
 
+            # Plot diagnostic for first few samples
+            if i < 5:
+                plot_path = os.path.join(plot_dir, f'sample_{i+1}_multistart.png')
+                try:
+                    plot_multi_start_diagnostic(sample, wind_velocity, mesh, c0, plot_path)
+                except Exception as e:
+                    print(f"  Warning: plotting failed: {e}")
+
         except Exception as e:
             elapsed = time.time() - t0
             failed += 1
@@ -553,11 +663,17 @@ def generate_training_data():
 
         # Checkpoint every 10 samples
         if (i + 1) % 10 == 0 or i == n_samples - 1:
+            # Don't save all_m_opts in checkpoint (too large)
+            checkpoint_data = []
+            for s in training_data:
+                s_copy = {k: v for k, v in s.items() if k != 'all_m_opts'}
+                checkpoint_data.append(s_copy)
+
             with open(output_file, 'wb') as f:
                 pickle.dump({
-                    'samples': training_data,
+                    'samples': checkpoint_data,
                     'job_id': job_id,
-                    'n_samples': len(training_data),
+                    'n_samples': len(checkpoint_data),
                     'n_starts': n_starts,
                     'buildings': BUILDINGS,
                     'wind_prior': {
@@ -572,10 +688,10 @@ def generate_training_data():
                         'bounds': DRONE_POS_BOUNDS,
                     },
                     'n_dofs': n_dofs,
-                    'nn_input_dim': 4,  # 2 speeds + 2 position
+                    'nn_input_dim': 4,
                     'nn_output_dim': 4*K + 2,
                 }, f)
-            print(f"  (checkpoint: {len(training_data)} samples saved to {output_file})")
+            print(f"  (checkpoint: {len(checkpoint_data)} samples saved to {output_file})")
             sys.stdout.flush()
 
     total_time = time.time() - t_start
@@ -600,6 +716,7 @@ def generate_training_data():
         print(f"  EIG spread mean: {np.mean(spreads):.2f} (avg range across multi-starts)")
 
     print(f"\n  Output: {output_file}")
+    print(f"  Plots:  {plot_dir}/")
     print(f"{'=' * 70}")
     sys.stdout.flush()
 
