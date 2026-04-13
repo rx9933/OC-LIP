@@ -1,6 +1,13 @@
 """
 Training data generation for OED on hIPPYlib buildings mesh.
 
+CHANGES FROM PREVIOUS VERSION:
+  1. MULTI-START: 10 random initial guesses per sample (was 1)
+  2. BEST SELECTION: keep the multi-refinement with highest EIG per sample
+  3. N_MULTI_STARTS configurable via --n_starts argument
+  4. Saves all 10 EIG values per sample for diagnostics
+  5. Default n_samples increased (target 8000 total across jobs)
+  6. Prints EIG spread per sample to monitor basin diversity
 """
 
 import numpy as np
@@ -38,7 +45,7 @@ dl.set_log_active(False)
 # ================================================================
 # CONFIGURATION
 # ================================================================
-MESH_FILE = 'ad_20.xml'#'/home/fredkhouri/hippylib/applications/ad_diff/ad_20.xml'
+MESH_FILE = 'ad_20.xml'
 
 # Buildings
 BUILDINGS = [
@@ -65,25 +72,28 @@ DRONE_POS_STD = 0.15
 DRONE_POS_BOUNDS = (0.12, 0.88)
 
 # ================================================================
-# PARSE ARGUMENTS
+# CHANGE 3: n_starts argument added
 # ================================================================
 import argparse
 
 if any('ipykernel' in arg for arg in sys.argv):
-    args = argparse.Namespace(job_id=0, n_samples=10, output_prefix='hippylib_training_data')
+    args = argparse.Namespace(job_id=0, n_samples=10, n_starts=10,
+                              output_prefix='hippylib_training_data')
 else:
     parser = argparse.ArgumentParser(description='Generate OED training data (hIPPYlib buildings)')
     parser.add_argument('--job_id', type=int, default=0,
                         help='Job ID for parallel runs')
-    parser.add_argument('--n_samples', type=int, default=100,
+    parser.add_argument('--n_samples', type=int, default=1000,
                         help='Number of samples to generate')
+    parser.add_argument('--n_starts', type=int, default=10,
+                        help='Number of multi-start initial guesses per sample')
     parser.add_argument('--output_prefix', type=str, default='hippylib_training_data',
                         help='Prefix for output file')
     args, _ = parser.parse_known_args()
 
 
 # ================================================================
-# SETUP FUNCTIONS
+# SETUP FUNCTIONS (UNCHANGED)
 # ================================================================
 def v_boundary(x, on_boundary):
     return on_boundary
@@ -149,24 +159,21 @@ def setup_prior_buildings(Vh):
 
 
 # ================================================================
-# SAMPLING FUNCTIONS
+# SAMPLING FUNCTIONS (UNCHANGED)
 # ================================================================
 def sample_wind_speeds():
-    """Sample baseline wall speeds from Gaussian priors."""
     sl = max(0.1, np.random.normal(WIND_SPEED_LEFT_MEAN, WIND_SPEED_LEFT_STD))
     sr = max(0.1, np.random.normal(WIND_SPEED_RIGHT_MEAN, WIND_SPEED_RIGHT_STD))
     return sl, sr
 
 
 def sample_wall_perturbations():
-    """Sample Fourier perturbation coefficients for both walls."""
     coeffs_left = np.array([np.random.normal(0, s) for s in WALL_PERTURB_STDS])
     coeffs_right = np.array([np.random.normal(0, s) for s in WALL_PERTURB_STDS])
     return coeffs_left, coeffs_right
 
 
 def point_in_building(x, y, margin_extra=0.02):
-    """Check if point is inside any building (with extra margin)."""
     for b in BUILDINGS:
         xmin, ymin = b['lower']
         xmax, ymax = b['upper']
@@ -177,7 +184,6 @@ def point_in_building(x, y, margin_extra=0.02):
 
 
 def sample_drone_position():
-    """Sample drone position avoiding buildings."""
     max_attempts = 100
     for _ in range(max_attempts):
         x = np.clip(np.random.normal(DRONE_POS_MEAN, DRONE_POS_STD),
@@ -190,10 +196,9 @@ def sample_drone_position():
 
 
 # ================================================================
-# MULTI-REFINEMENT OPTIMIZATION
+# OPTIMIZATION HELPER FUNCTIONS (UNCHANGED except logging)
 # ================================================================
 def fix_c0_in_m(m, c0, K_stage, omegas):
-    """Adjust x_bar, y_bar so c(t0) = c0."""
     t0_obs = OBSERVATION_TIMES[0]
     shift_x = 0.0
     shift_y = 0.0
@@ -208,7 +213,6 @@ def fix_c0_in_m(m, c0, K_stage, omegas):
 
 
 def make_bounds(K_stage):
-    """Create bounds for L-BFGS-B."""
     lb = np.zeros(4 * K_stage + 2)
     ub = np.zeros(4 * K_stage + 2)
     lb[0] = 0.1; ub[0] = 0.9
@@ -221,7 +225,6 @@ def make_bounds(K_stage):
 
 
 def create_initial_guess_K1(c0):
-    """Create random K=1 initial guess."""
     K_stage = 1
     omegas = fourier_frequencies(TY, K_stage)
     m0 = np.zeros(4 * K_stage + 2)
@@ -246,7 +249,6 @@ def create_initial_guess_K1(c0):
 
 
 def pad_solution(m_opt, K_from, K_to):
-    """Pad solution with zeros for new modes."""
     m_new = np.zeros(4 * K_to + 2)
     m_new[:len(m_opt)] = m_opt.copy()
     return m_new
@@ -254,8 +256,6 @@ def pad_solution(m_opt, K_from, K_to):
 
 def objective_with_obstacles(m, c0, Vh, mesh, prior, wind_velocity,
                               stage_K, omegas, eigsolver):
-
-    """OED objective with all penalties including obstacles."""
     prob, msft, tgts = build_problem(
         m, Vh, prior, SIMULATION_TIMES, OBSERVATION_TIMES,
         wind_velocity, stage_K, omegas, NOISE_VARIANCE, mesh
@@ -289,23 +289,24 @@ def objective_with_obstacles(m, c0, Vh, mesh, prior, wind_velocity,
     return J, grad, EIG_val, pen_val
 
 
-def run_single_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity, eigsolver, sample_idx):
-    """Run optimization for one K stage."""
+# CHANGE: added start_idx parameter for logging
+def run_single_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity, eigsolver, sample_idx,
+                     start_idx=None):
     omegas = fourier_frequencies(TY, stage_K)
     bounds = make_bounds(stage_K)
     reset_cached_bbt()
 
     eval_count = [0]
+    start_str = f"|s{start_idx}" if start_idx is not None else ""
 
     def objective(m):
-
         J, grad, eig_val, pen_val = objective_with_obstacles(
             m, c0, Vh, mesh, prior, wind_velocity, stage_K, omegas, eigsolver
         )
 
         eval_count[0] += 1
         if eval_count[0] % 5 == 1:
-            print(f"      [{sample_idx+1:4d}|K={stage_K}] eval {eval_count[0]:3d}  "
+            print(f"      [{sample_idx+1:4d}{start_str}|K={stage_K}] eval {eval_count[0]:3d}  "
                   f"J={J:.4f}  EIG={eig_val:.4f}  |g|={np.linalg.norm(grad):.4e}")
             sys.stdout.flush()
         return J, grad
@@ -320,60 +321,59 @@ def run_single_stage(stage_K, m0, c0, mesh, Vh, prior, wind_velocity, eigsolver,
 
     m_opt = result.x
 
-    # Final evaluation
     _, _, eig_opt, pen_opt = objective_with_obstacles(
         m_opt, c0, Vh, mesh, prior, wind_velocity, stage_K, omegas, eigsolver
     )
 
-    print(f"      [{sample_idx+1:4d}|K={stage_K}] done: EIG={eig_opt:.2f}  "
+    print(f"      [{sample_idx+1:4d}{start_str}|K={stage_K}] done: EIG={eig_opt:.2f}  "
           f"pen={pen_opt:.3f}  nfev={result.nfev}")
     sys.stdout.flush()
 
     return m_opt, eig_opt, pen_opt, result.nfev
 
 
-def run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, sample_idx):
-    """Run K=1 -> K=2 -> K=3 multi-refinement."""
+# CHANGE: accepts m0_K1 and start_idx as arguments
+def run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, sample_idx,
+                         m0_K1=None, start_idx=None):
+    """Run K=1 -> K=2 -> K=3 multi-refinement from a single initial guess."""
     shared_eigsolver = CachedEigensolver()
 
-
-
     omegas_K1 = fourier_frequencies(TY, 1)
-    m_initial = create_initial_guess_K1(c0)
-    
-    # Build problem and compute EIG for initial guess
+
+    if m0_K1 is None:
+        m0_K1 = create_initial_guess_K1(c0)
+
     prob_initial, _, _ = build_problem(
-        m_initial, Vh, prior, SIMULATION_TIMES, OBSERVATION_TIMES,
+        m0_K1, Vh, prior, SIMULATION_TIMES, OBSERVATION_TIMES,
         wind_velocity, 1, omegas_K1, NOISE_VARIANCE, mesh
     )
-    
-    # Compute EIG for initial guess
     _, _, eig_initial = shared_eigsolver.solve(prob_initial, prior, R_MODES)
 
-
     # Stage 1: K=1
-    m0_K1 = create_initial_guess_K1(c0)
-
     m1_opt, eig_K1, pen_K1, nfev_K1 = run_single_stage(
-        1, m0_K1, c0, mesh, Vh, prior, wind_velocity, shared_eigsolver, sample_idx
+        1, m0_K1, c0, mesh, Vh, prior, wind_velocity, shared_eigsolver, sample_idx,
+        start_idx=start_idx
     )
 
     # Stage 2: K=2
     m0_K2 = pad_solution(m1_opt, 1, 2)
     m2_opt, eig_K2, pen_K2, nfev_K2 = run_single_stage(
-        2, m0_K2, c0, mesh, Vh, prior, wind_velocity, shared_eigsolver, sample_idx
+        2, m0_K2, c0, mesh, Vh, prior, wind_velocity, shared_eigsolver, sample_idx,
+        start_idx=start_idx
     )
 
     # Stage 3: K=3
     m0_K3 = pad_solution(m2_opt, 2, 3)
     m3_opt, eig_K3, pen_K3, nfev_K3 = run_single_stage(
-        3, m0_K3, c0, mesh, Vh, prior, wind_velocity, shared_eigsolver, sample_idx
+        3, m0_K3, c0, mesh, Vh, prior, wind_velocity, shared_eigsolver, sample_idx,
+        start_idx=start_idx
     )
 
     total_nfev = nfev_K1 + nfev_K2 + nfev_K3
 
     return {
         'm_opt': m3_opt.copy(),
+        'm_init': m0_K1.copy(),
         'eig_K0': eig_initial,
         'eig_K1': eig_K1,
         'eig_K2': eig_K2,
@@ -384,36 +384,95 @@ def run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, sample_idx):
 
 
 # ================================================================
+# CHANGE 1 & 2: MULTI-START WRAPPER (NEW FUNCTION)
+# ================================================================
+def run_multi_start_multi_refinement(c0, mesh, Vh, prior, wind_velocity,
+                                      sample_idx, n_starts=10):
+    """
+    Run n_starts independent multi-refinements from different random initial guesses.
+    Keep the one with the highest final EIG (K=3).
+    """
+    best_result = None
+    best_eig = -np.inf
+    all_eigs = []
+
+    for s in range(n_starts):
+        print(f"    Start {s+1}/{n_starts}:")
+        sys.stdout.flush()
+
+        try:
+            m0_K1 = create_initial_guess_K1(c0)
+
+            result = run_multi_refinement(
+                c0, mesh, Vh, prior, wind_velocity, sample_idx,
+                m0_K1=m0_K1, start_idx=s
+            )
+
+            all_eigs.append(result['eig_K3'])
+
+            is_best = result['eig_K3'] > best_eig
+            if is_best:
+                best_eig = result['eig_K3']
+                best_result = result
+
+            print(f"    Start {s+1}: EIG_K3={result['eig_K3']:.2f} "
+                  f"{'*** BEST ***' if is_best else ''}")
+            sys.stdout.flush()
+
+        except Exception as e:
+            print(f"    Start {s+1}: FAILED ({e})")
+            all_eigs.append(np.nan)
+            sys.stdout.flush()
+
+    # Store diagnostics
+    if best_result is not None:
+        best_result['all_eigs'] = np.array(all_eigs)
+        best_result['n_starts'] = n_starts
+        best_result['eig_spread'] = np.nanmax(all_eigs) - np.nanmin(all_eigs)
+
+    valid_eigs = [e for e in all_eigs if not np.isnan(e)]
+    if len(valid_eigs) > 1:
+        print(f"    EIG spread: {min(valid_eigs):.2f} to {max(valid_eigs):.2f} "
+              f"(range={max(valid_eigs)-min(valid_eigs):.2f}, "
+              f"best={best_eig:.2f})")
+    sys.stdout.flush()
+
+    return best_result
+
+
+# ================================================================
 # MAIN TRAINING DATA GENERATION
 # ================================================================
 def generate_training_data():
     n_samples = args.n_samples
+    n_starts = args.n_starts
     job_id = args.job_id
     output_file = f"{args.output_prefix}_job{job_id}.pkl"
 
     print("=" * 70)
     print("  TRAINING DATA GENERATION: HIPPYLIB BUILDINGS EXAMPLE")
+    print("  WITH MULTI-START MULTI-REFINEMENT")
     print("=" * 70)
     print(f"  Job ID:          {job_id}")
     print(f"  Samples:         {n_samples}")
+    print(f"  Multi-starts:    {n_starts} per sample")
     print(f"  Output:          {output_file}")
     print(f"  Wind prior:      sl ~ N({WIND_SPEED_LEFT_MEAN}, {WIND_SPEED_LEFT_STD}^2)")
     print(f"                   sr ~ N({WIND_SPEED_RIGHT_MEAN}, {WIND_SPEED_RIGHT_STD}^2)")
     print(f"  Wall modes:      {N_WALL_MODES} per wall")
     print(f"  Perturb stds:    {WALL_PERTURB_STDS}")
     print(f"  Drone prior:     c0 ~ N({DRONE_POS_MEAN}, {DRONE_POS_STD}^2), avoid buildings")
-    print(f"  Multi-refinement: K=1 -> K=2 -> K=3")
+    print(f"  Multi-refinement: K=1 -> K=2 -> K=3 (x{n_starts} starts)")
     print(f"  R_MODES:         {R_MODES}")
     print(f"  NN input dim:    {2 + 2*N_WALL_MODES + 2} (2 speeds + {2*N_WALL_MODES} perturb + 2 position)")
     print(f"  NN output dim:   {4*K + 2} (Fourier path coefficients)")
+    print(f"  Est. cost:       ~{n_starts}x more PDE solves per sample vs single-start")
     print("=" * 70)
     sys.stdout.flush()
 
-    # Base seed unique per job
     base_seed = int(time.time()) + job_id * 1000000
     print(f"  Base seed: {base_seed}")
 
-    # Check mesh DOFs
     mesh_template = dl.refine(dl.Mesh(MESH_FILE))
     Vh_template = dl.FunctionSpace(mesh_template, "Lagrange", 1)
     n_dofs = Vh_template.dim()
@@ -429,11 +488,8 @@ def generate_training_data():
         seed = base_seed + i
         np.random.seed(seed)
 
-        # Sample wind parameters
         speed_left, speed_right = sample_wind_speeds()
         coeffs_left, coeffs_right = sample_wall_perturbations()
-
-        # Sample drone position
         c0 = sample_drone_position()
 
         print(f"\n  [{i+1:4d}/{n_samples}] seed={seed}  "
@@ -446,33 +502,31 @@ def generate_training_data():
         t0 = time.time()
 
         try:
-            # Solve Navier-Stokes for this wind
+            # Solve Navier-Stokes ONCE per sample (shared across all starts)
             mesh, Vh, wind_velocity = setup_buildings_mesh(
                 speed_left, speed_right, coeffs_left, coeffs_right
             )
-    
+
             prior = setup_prior_buildings(Vh)
-    
-            # Extract full wind field as numpy array (for POD later)
             wind_dof_vector = wind_velocity.vector().get_local().copy()
 
+            # CHANGE 1 & 2: Multi-start (was single run_multi_refinement)
+            result = run_multi_start_multi_refinement(
+                c0, mesh, Vh, prior, wind_velocity, i, n_starts=n_starts
+            )
 
-            result = run_multi_refinement(c0, mesh, Vh, prior, wind_velocity, i)
+            if result is None:
+                raise RuntimeError("All multi-start attempts failed")
 
             elapsed = time.time() - t0
 
-            # Build wind_params vector for NN input
-            # [speed_left, speed_right, cl_1..cl_5, cr_1..cr_5]
             wind_params = np.concatenate([
                 [speed_left, speed_right],
                 coeffs_left,
                 coeffs_right
             ])
-
-            # Build full NN input: wind_params + drone position
             nn_input = np.concatenate([wind_params, c0])
 
-            # Store sample
             sample = {
                 'seed': seed,
                 'c_init': c0.copy(),
@@ -484,6 +538,7 @@ def generate_training_data():
                 'nn_input': nn_input.copy(),
                 'wind_dof_vector': wind_dof_vector,
                 'm_opt': result['m_opt'].copy(),
+                'm_init': result['m_init'].copy(),
                 'eig_K0': result['eig_K0'],
                 'eig_K1': result['eig_K1'],
                 'eig_K2': result['eig_K2'],
@@ -491,15 +546,21 @@ def generate_training_data():
                 'pen_K3': result['pen_K3'],
                 'nfev_total': result['nfev_total'],
                 'time': elapsed,
+                # CHANGE 4: Multi-start diagnostics
+                'all_eigs': result.get('all_eigs', np.array([])),
+                'n_starts': result.get('n_starts', 1),
+                'eig_spread': result.get('eig_spread', 0.0),
             }
 
             training_data.append(sample)
             successful += 1
 
-            gain = result['eig_K3'] - result['eig_K1']
-            print(f"    -> EIG: {result['eig_K1']:.2f} -> {result['eig_K2']:.2f} -> {result['eig_K3']:.2f} "
-                  f"(+{gain:.2f})  pen={result['pen_K3']:.3f}  "
-                  f"nfev={result['nfev_total']}  [{elapsed:.0f}s]")
+            gain = result['eig_K3'] - result['eig_K0']
+            spread = result.get('eig_spread', 0.0)
+            print(f"    -> BEST EIG: {result['eig_K3']:.2f}  "
+                  f"(spread={spread:.2f})  "
+                  f"gain={gain:.2f}  pen={result['pen_K3']:.3f}  "
+                  f"[{elapsed:.0f}s]")
             sys.stdout.flush()
 
         except Exception as e:
@@ -515,6 +576,7 @@ def generate_training_data():
                     'samples': training_data,
                     'job_id': job_id,
                     'n_samples': len(training_data),
+                    'n_starts': n_starts,
                     'buildings': BUILDINGS,
                     'wind_prior': {
                         'speed_left_mean': WIND_SPEED_LEFT_MEAN,
@@ -538,22 +600,24 @@ def generate_training_data():
 
     total_time = time.time() - t_start
 
-    # Summary
     print(f"\n{'=' * 70}")
     print(f"  JOB {job_id} COMPLETE")
     print(f"{'=' * 70}")
     print(f"  Successful: {successful} / {n_samples}")
     print(f"  Failed:     {failed}")
+    print(f"  Multi-starts per sample: {n_starts}")
     print(f"  Total time: {total_time/3600:.2f} hours")
     print(f"  Avg time:   {total_time/max(successful,1):.1f}s per sample")
 
     if successful > 0:
         eigs = [s['eig_K3'] for s in training_data]
-        gains = [s['eig_K3'] - s['eig_K1'] for s in training_data]
+        gains = [s['eig_K3'] - s['eig_K0'] for s in training_data]
+        spreads = [s['eig_spread'] for s in training_data]
         print(f"\n  EIG K=3 range:  {min(eigs):.2f} to {max(eigs):.2f}")
         print(f"  EIG K=3 mean:   {np.mean(eigs):.2f} +/- {np.std(eigs):.2f}")
         print(f"  Gain range:     {min(gains):.2f} to {max(gains):.2f}")
         print(f"  Gain mean:      {np.mean(gains):.2f} +/- {np.std(gains):.2f}")
+        print(f"  EIG spread mean: {np.mean(spreads):.2f} (avg range across multi-starts)")
 
     print(f"\n  Output: {output_file}")
     print(f"{'=' * 70}")
