@@ -294,8 +294,9 @@ def signed_distance_to_obstacle(xy, obs):
         return dist, grad_dist
 
 
-def obstacle_penalty_dense(m_fourier, t_param, K, omegas, obstacles, zeta_obs=2000.0, n_dense=200):
-    """Penalize path entering obstacle + margin zone."""
+def obstacle_penalty_dense(m_fourier, t_param, K, omegas, obstacles, zeta_obs=10000.0, n_dense=200):
+    """Penalize path entering obstacle + margin zone.
+    Two-tiered: soft in margin zone, brutal inside actual building."""
     t_dense = np.linspace(t_param[0], t_param[-1], n_dense)
     dt_dense = t_dense[1] - t_dense[0]
     targets_dense = generate_targets(m_fourier, t_dense, K, omegas)
@@ -310,9 +311,17 @@ def obstacle_penalty_dense(m_fourier, t_param, K, omegas, obstacles, zeta_obs=20
             dist, grad_dist = signed_distance_to_obstacle(pt, obs)
             penetration = margin - dist
             if penetration > 0:
+                # Soft penalty in margin zone (quadratic)
                 val += dt_dense * zeta_obs * penetration**2
                 S_obs[j, 0] += -zeta_obs * 2.0 * penetration * grad_dist[0]
                 S_obs[j, 1] += -zeta_obs * 2.0 * penetration * grad_dist[1]
+                
+                # HARD penalty inside actual building wall (dist < 0)
+                if dist < 0:
+                    wall_pen = 50.0 * zeta_obs  # 50x stronger
+                    val += dt_dense * wall_pen * dist**2
+                    S_obs[j, 0] += -wall_pen * 2.0 * (-dist) * grad_dist[0]
+                    S_obs[j, 1] += -wall_pen * 2.0 * (-dist) * grad_dist[1]
     
     g = np.zeros(4*K + 2)
     g[0] = dt_dense * np.sum(S_obs[:, 0])
