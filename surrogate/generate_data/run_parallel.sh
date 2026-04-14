@@ -11,9 +11,9 @@ PROJECT_NAME='pml' # or free_surface
 log_time "Starting parallel data generation..."
 
 # Total samples needed
-total_samples=1 #12800
+total_samples=12800
 
-num_jobs=1
+num_jobs=20
 samples_per_job=$((total_samples / num_jobs))
 
 log_time "Total samples: $total_samples"
@@ -27,7 +27,7 @@ mkdir -p logs
 for ((job_id=0; job_id<num_jobs; job_id++)); do
     log_time "Launching job ${job_id} with ${samples_per_job} samples"
     
-    python training_data_generator.py \
+    python training_data_generator_hippylib_example.py \
         --job_id ${job_id} \
         --n_samples ${samples_per_job} \
         --output_prefix "oed_training_data" > logs/log_job${job_id}.txt 2>&1 &
