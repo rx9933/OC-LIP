@@ -52,9 +52,9 @@ A_MAX = 3.0            # was 0.5 — too restrictive
 # =============================================================================
 # OPTIMIZATION PARAMETERS
 # =============================================================================
-OPT_MAXITER = 200
-OPT_MAXFUN = 800
-OPT_FTOL = 1e-12
+OPT_MAXITER = 100
+OPT_MAXFUN = 300
+OPT_FTOL = 1e-8
 OPT_MAXLS = 40
 OPT_GTOL = 10.0
 
