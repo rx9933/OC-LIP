@@ -1,0 +1,586 @@
+import os, sys
+import torch
+from utils import *
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+import numpy as np
+from torch.utils.data import DataLoader
+import matplotlib.patches as mpatches
+
+sys.path.append('../../')
+sys.path.append('generate_data/')
+sys.path.append('plotting/')
+sys.path.append('/workspace/arushi/hippylib')
+sys.path.append('/workspace/arushi/hippyflow')
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), 'generate_data'))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+
+from generate_data.fe_setup import setup_fe_spaces
+from generate_data.config import *
+from fourier_utils import fourier_frequencies, generate_targets
+from generate_data.wind_utils import spectral_wind_to_field
+
+from dinotorch_lite.src.dinotorch_lite import *
+from plotting.plot_trains import *; from generate_data.config import *
+import dolfin as dl
+# IMPORT THE WORKING FUNCTIONS FROM loss_utils
+from loss_utils import compute_path_from_m, path_mse_loss, combined_loss_with_components, check_path_violations
+
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('-rQ', '--rQ', type=int, default=22, help="rQ")
+parser.add_argument('-dQ', '--dQ', type=int, default=22, help="dQ")
+parser.add_argument('-rM', '--rM', type=int, default=12, help="rM")
+parser.add_argument('-dM', '--dM', type=int, default=14, help="dM")
+parser.add_argument('-data_type', '--data_type', type=str, default='xv', help="xv or xvspectral")
+parser.add_argument('-n_train', '--n_train', type=int, default=7500, help="Number of training data")
+parser.add_argument('-n_test', '--n_test', type=int, default=200, help="Number of test data")
+parser.add_argument('-n_data', '--n_data', type=int, default=7945, help="Max number of total data")
+parser.add_argument('-plot_samples', '--plot_samples', type=int, default=200, help="Number of test samples to plot")
+parser.add_argument('-data_dir', '--data_dir', type=str, default='data/', help="data directory")
+parser.add_argument('-save_dir', '--save_dir', type=str, default='./models/flow/', help="Directory to save models")
+parser.add_argument('-epochs', '--epochs', type=int, default=3000, help="epochs")
+parser.add_argument('-eig_model_path', '--eig_model_path', type=str, 
+                    default='data/eig_datatype_eig_rQ14_rM1_ntrain7500.pth', 
+                    help="Path to pretrained EIG surrogate model")
+parser.add_argument('-eig_input_dim', '--eig_input_dim', type=int, default=14, 
+                    help="Input dimension of EIG surrogate")
+parser.add_argument('-lambda_eig', '--lambda_eig', type=float, default=.001, 
+                    help="Weight for EIG maximization loss")
+args = parser.parse_args()
+
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+print("\n" + "="*60)
+print("LOADING PRETRAINED EIG SURROGATE")
+print("="*60)
+
+eig_surrogate = None
+if os.path.exists(args.eig_model_path):
+    from dinotorch_lite.src.dinotorch_lite import GenericDense
+    eig_surrogate = GenericDense(input_dim=args.eig_input_dim, 
+                                 hidden_layer_dim=2*args.eig_input_dim, 
+                                 output_dim=1).to(device)
+    eig_surrogate.load_state_dict(torch.load(args.eig_model_path, map_location=device))
+    eig_surrogate.eval()
+    print(f"Loaded EIG surrogate from {args.eig_model_path}")
+    
+    # Freeze EIG surrogate weights
+    for param in eig_surrogate.parameters():
+        param.requires_grad = False
+else:
+    print(f"WARNING: EIG surrogate not found at {args.eig_model_path}")
+    print("Training without EIG objective...")
+
+batch_size = 32
+
+assert args.n_train <= 8000 and args.n_train > 0
+
+observation_times = np.linspace(T_1, T_FINAL, 200)
+omegas = fourier_frequencies(TY, K)
+
+# ================================================================
+# BUILDINGS CONFIGURATION
+# ================================================================
+BUILDINGS = [
+    {'lower': (0.26, 0.16), 'upper': (0.49, 0.39), 'margin': 0.03},
+    {'lower': (0.61, 0.61), 'upper': (0.74, 0.84), 'margin': 0.03},
+]
+
+def create_building_features(buildings):
+    """Flatten building coordinates into a feature vector."""
+    features = []
+    for b in buildings:
+        xmin, ymin = b['lower']
+        xmax, ymax = b['upper']
+        margin = b['margin']
+        features.extend([xmin, ymin, xmax, ymax, margin])
+    return np.array(features)
+
+def draw_buildings(ax):
+    """Draw building rectangles and margins on a plot axis."""
+    for b in BUILDINGS:
+        xmin, ymin = b['lower']
+        xmax, ymax = b['upper']
+        w = xmax - xmin
+        h = ymax - ymin
+        m = b['margin']
+        rect = mpatches.Rectangle((xmin, ymin), w, h,
+                                   color='black', alpha=0.8, zorder=4)
+        ax.add_patch(rect)
+        rect_m = mpatches.Rectangle((xmin-m, ymin-m), w+2*m, h+2*m,
+                                     color='black', alpha=0.2, linestyle='--',
+                                     fill=True, zorder=3)
+        ax.add_patch(rect_m)
+
+# ================================================================
+# IC ENFORCEMENT BY CONSTRUCTION
+# ================================================================
+class PathNetwork(torch.nn.Module):
+    """
+    Wraps a base NN to enforce the initial condition exactly.
+    """
+    def __init__(self, base_model, K=3, omegas=None, t0=1.0):
+        super().__init__()
+        self.base_model = base_model
+        self.K = K
+        self.omegas = omegas
+        self.t0 = t0
+
+        self.cos_vals = [float(np.cos(omegas[k] * t0)) for k in range(K)]
+        self.sin_vals = [float(np.sin(omegas[k] * t0)) for k in range(K)]
+
+    def forward(self, q, expected=None):
+        c0 = q[:, :2]
+        fourier_coeffs = self.base_model(q, expected=expected[:, 2:] if expected is not None else None)
+
+        shift_x = torch.zeros(q.shape[0], device=q.device)
+        shift_y = torch.zeros(q.shape[0], device=q.device)
+
+        for k in range(self.K):
+            shift_x = shift_x + fourier_coeffs[:, 4*k] * self.cos_vals[k] + fourier_coeffs[:, 4*k+1] * self.sin_vals[k]
+            shift_y = shift_y + fourier_coeffs[:, 4*k+2] * self.cos_vals[k] + fourier_coeffs[:, 4*k+3] * self.sin_vals[k]
+
+        x_bar = c0[:, 0] - shift_x
+        y_bar = c0[:, 1] - shift_y
+
+        m_full = torch.cat([x_bar.unsqueeze(1), y_bar.unsqueeze(1), fourier_coeffs], dim=1)
+        return m_full
+
+# ================================================================
+# LOAD DATA
+# ================================================================
+mq_data_dict = np.load(args.data_dir + 'mq_data_relabeled_pass2.npz', allow_pickle=True)
+
+m_data = mq_data_dict['m']
+
+if args.data_type == 'xv':
+    v_pod = mq_data_dict['v'][:, :20]
+    q_data = np.concatenate((mq_data_dict['x'], v_pod), axis=1)
+elif args.data_type == 'xvspectral':
+    q_data = np.concatenate((mq_data_dict['x'], mq_data_dict['v_mean'], mq_data_dict['v_coeff']), axis=1)
+
+# Add building features to every sample
+building_features = create_building_features(BUILDINGS)
+building_features_repeated = np.tile(building_features, (q_data.shape[0], 1))
+q_data = np.concatenate([q_data, building_features_repeated], axis=1)
+
+print(f"Data shapes: q={q_data.shape}, m={m_data.shape}")
+print(f"Input dim (dQ): {q_data.shape[1]}")
+print(f"Output dim (dM): {m_data.shape[1]}")
+
+m_train = torch.Tensor(m_data[:args.n_train])
+q_train = torch.Tensor(q_data[:args.n_train])
+
+m_val = torch.Tensor(m_data[args.n_train:-args.n_test])
+q_val = torch.Tensor(q_data[args.n_train:-args.n_test])
+
+m_test = torch.Tensor(m_data[-args.n_test:])
+q_test = torch.Tensor(q_data[-args.n_test:])
+
+l2invtrain = L2Dataset(q_train, m_train)
+l2invval = L2Dataset(q_val, m_val)
+l2invtest = L2Dataset(q_test, m_test)
+
+train_invloader = DataLoader(l2invtrain, batch_size=batch_size, shuffle=True)
+validation_invloader = DataLoader(l2invval, batch_size=batch_size, shuffle=False)
+test_invloader = DataLoader(l2invtest, batch_size=batch_size, shuffle=False)
+
+################################################################################
+# MODEL
+################################################################################
+args.dQ = q_data.shape[1] 
+base_model = GenericDenseSkipLearn0(input_dim=args.dQ, hidden_layer_dim=4*args.dQ, output_dim=12).to(device)
+model = PathNetwork(base_model, K=K, omegas=omegas, t0=T_1).to(device)
+
+print(f"\nModel architecture:")
+print(f"  Base model: {args.dQ}D -> {2*args.dQ}D -> 12D (Fourier amplitudes)")
+print(f"  PathNetwork: adds x_bar, y_bar from c0 -> 14D output")
+print(f"  IC enforced by construction (no penalty needed)")
+
+n_epochs = args.epochs
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+lr_scheduler = None
+
+# ================================================================
+# DEFINE LOSS FUNCTION USING YOUR WORKING loss_utils FUNCTIONS
+# ================================================================
+def make_combined_loss_with_eig(observation_times, K, omegas, buildings,
+                                fourier_weight=1.0, path_weight=1.0,
+                                boundary_weight=0.1, obstacle_weight=1000.0,
+                                eig_weight=0.0, eig_surrogate=None,
+                                eig_input_dim=14, device='cpu'):
+    """
+    Creates a combined loss function using the working loss_utils implementation.
+    """
+    def combined_loss_wrapper(pred, target):
+        # Use the working function from loss_utils
+        total_loss, fourier_loss, path_loss, boundary_penalty, obstacle_penalty = combined_loss_with_components(
+            pred, target, observation_times, K, omegas, buildings,
+            fourier_weight, path_weight, boundary_weight, obstacle_weight, device
+        )
+        
+        # Add EIG loss if available
+        eig_loss = torch.tensor(0.0, device=device)
+        if eig_surrogate is not None and eig_weight > 0:
+            eig_input = pred[:, :eig_input_dim]
+            eig_pred = eig_surrogate(eig_input).squeeze()
+            eig_loss = -torch.mean(eig_pred)  # Negative for maximization
+            total_loss = total_loss + eig_weight * eig_loss
+        
+        return total_loss, fourier_loss, path_loss, boundary_penalty, obstacle_penalty, eig_loss.item()
+    
+    return combined_loss_wrapper
+
+# Use the loss function
+combined_loss_func = make_combined_loss_with_eig(
+    observation_times, K, omegas, BUILDINGS,
+    fourier_weight=50, # *100
+    path_weight=50.0,
+    boundary_weight=0.1,
+    obstacle_weight=100.0,  # High weight for building penalty
+    eig_weight=args.lambda_eig,
+    eig_surrogate=eig_surrogate,
+    eig_input_dim=args.eig_input_dim,
+    device=device
+)
+
+# Train with separate loss tracking
+network, history = train_with_separate_losses_eig(
+    model, combined_loss_func, train_invloader, validation_invloader,
+    optimizer, n_epochs=n_epochs, patience=50,
+    lr_scheduler=lr_scheduler, verbose=True
+)
+
+
+#l2_training_with_early_stopping
+
+rel_error_test = evaluate_l2_error(model, test_invloader)
+print('L2 relative error = ', rel_error_test)
+
+model_save_name = f"eig_rbno_datatype_{args.data_type}_rQ{args.dQ}_rM{args.dM}_ntrain{args.n_train}.pth"
+torch.save(model.state_dict(), os.path.join(args.data_dir, model_save_name))
+
+plot_training_history('RBNO', history, args.n_train, args.data_dir, args)
+
+# Calculate MSE loss
+model.eval()
+mse_loss_fn = torch.nn.MSELoss()
+mse_total = 0.0
+n_batches = 0
+
+with torch.no_grad():
+    for q_batch, m_batch in test_invloader:
+        q_batch = q_batch.to(device)
+        m_batch = m_batch.to(device)
+
+        m_pred = model(q_batch)
+        batch_mse = mse_loss_fn(m_pred, m_batch)
+        mse_total += batch_mse.item() * q_batch.size(0)
+        n_batches += q_batch.size(0)
+
+mse = mse_total / n_batches
+print(f'MSE loss = {mse:.6f}')
+
+# ================================================================
+# IC VERIFICATION
+# ================================================================
+print("\n" + "="*60)
+print("IC ENFORCEMENT VERIFICATION")
+print("="*60)
+model.eval()
+with torch.no_grad():
+    for i in range(min(5, len(q_test))):
+        q_input = q_test[i].unsqueeze(0).to(device)
+        m_pred = model(q_input).cpu().numpy().flatten()
+        c0_input = q_test[i][:2].numpy()
+
+        pred_path = generate_targets(m_pred, np.array([observation_times[0]]), K, omegas)
+        pred_start = pred_path[0]
+
+        ic_error = np.linalg.norm(pred_start - c0_input)
+        print(f"  Sample {i}: c0=({c0_input[0]:.4f}, {c0_input[1]:.4f}), "
+              f"path_start=({pred_start[0]:.4f}, {pred_start[1]:.4f}), "
+              f"IC error={ic_error:.2e}")
+
+with open(os.path.join(args.data_dir, "test_errors.txt"), "a") as f:
+    f.write(f"data_type={args.data_type}, n_train={args.n_train}, rel_error={rel_error_test}, mse={mse}\n")
+# ================================================================
+# PLOT TEST EXAMPLES - USING CORRECT MESH
+# ================================================================
+print("\n" + "="*60)
+print("PLOTTING TEST EXAMPLES")
+print("="*60)
+
+# Use the same mesh as in data generation (refined from ad_20.xml)
+MESH_FILE = 'generate_data/ad_20.xml'  # Make sure this path is correct
+try:
+    mesh = dl.refine(dl.Mesh(MESH_FILE))
+    print(f"Loaded mesh from {MESH_FILE} with {mesh.num_cells()} cells")
+except:
+    # Fallback to unit square if file not found
+    print(f"Warning: Could not load {MESH_FILE}, using UnitSquareMesh({NX}, {NY})")
+    mesh = dl.UnitSquareMesh(NX, NY)
+
+Vh_scalar = dl.FunctionSpace(mesh, 'Lagrange', 1)
+V_vec_deg2 = dl.VectorFunctionSpace(mesh, 'Lagrange', 2)  # For reconstruction
+
+n_plot = min(args.plot_samples, len(m_test))
+test_indices = np.arange(1, n_plot)
+
+print(f"Plotting {n_plot} test examples...")
+
+fig = plt.figure(figsize=(20, 5*n_plot))
+plot_idx = 1
+
+def plot_wind_field_on_grid(ax, wind_velocity, resolution=30):
+    """Plot wind field on a regular grid - exact copy from working example."""
+    # Create regular grid
+    x = np.linspace(0, 1, resolution)
+    y = np.linspace(0, 1, resolution)
+    X, Y = np.meshgrid(x, y)
+    
+    # Evaluate wind velocity at grid points
+    U = np.zeros_like(X)
+    V = np.zeros_like(Y)
+    
+    for i in range(resolution):
+        for j in range(resolution):
+            point = np.array([X[i,j], Y[i,j]])
+            try:
+                # Try to evaluate at point
+                val = wind_velocity(point)
+                U[i,j] = val[0]
+                V[i,j] = val[1]
+            except:
+                # If point is outside, use nearest valid value
+                closest_point = np.clip(point, 0.001, 0.999)
+                try:
+                    val = wind_velocity(closest_point)
+                    U[i,j] = val[0]
+                    V[i,j] = val[1]
+                except:
+                    U[i,j] = 0
+                    V[i,j] = 0
+    
+    # Compute speed
+    speed = np.sqrt(U**2 + V**2)
+    
+    # Plot quiver with color
+    quiver = ax.quiver(X, Y, U, V, speed, 
+                       cmap='coolwarm', alpha=0.7, 
+                       scale=15, width=0.003)
+    
+    return quiver
+
+percent_diff = 0.0
+margin_violations = 0
+building_violations = 0
+diffs = []
+for sample_idx in test_indices:
+    m_true = m_test[sample_idx].cpu().numpy()
+    q_input = q_test[sample_idx].cpu().numpy()
+
+    clean_idx = -args.n_test + sample_idx
+    if clean_idx < 0:
+        clean_idx = clean_idx % len(m_data)
+
+    if args.data_type == 'xvspectral':
+        x_init = q_input[:2]
+        v_mean = q_input[2:4]
+        v_coeff = q_input[4:]
+
+        r_wind = 3
+        n_coeff_per_mode = r_wind * r_wind
+        a_ij = v_coeff[:n_coeff_per_mode].reshape(r_wind, r_wind)
+        b_ij = v_coeff[n_coeff_per_mode:].reshape(r_wind, r_wind)
+
+        wind_coeffs = {
+            'a_ij': a_ij, 'b_ij': b_ij,
+            'mean_vx': v_mean[0], 'mean_vy': v_mean[1],
+            'r_wind': r_wind, 'sigma': 1.0, 'alpha': 2.0
+        }
+
+        wind_field, _ = spectral_wind_to_field(mesh, wind_coeffs)
+        eig_true = mq_data_dict['eig_opt'][clean_idx]
+        eig_init = mq_data_dict['eig_init'][clean_idx]
+
+    else:  # args.data_type == 'xv'
+        x_init = q_input[:2]
+        v_coeff = q_input[2:]
+        wind_coeffs = None
+        
+        # Get stored wind DOFs
+        wind_dofs = mq_data_dict['wind_dofs'][clean_idx]
+        
+        # Reconstruct wind field using the working example's method
+        try:
+            wind_field = reconstruct_wind_from_dofs(mesh, wind_dofs)
+            print(f"  Successfully reconstructed wind field (DOFs: {len(wind_dofs)})")
+        except Exception as e:
+            print(f"  Warning: Could not reconstruct wind field: {e}")
+            wind_field = None
+        
+        eig_true = mq_data_dict['eig_K3'][clean_idx]
+        eig_init = mq_data_dict['eig_K0'][clean_idx]
+
+    # Predict with NN
+    model.eval()
+    with torch.no_grad():
+        q_input_tensor = torch.FloatTensor(q_input).unsqueeze(0).to(device)
+        m_pred = model(q_input_tensor).cpu().numpy().flatten()
+
+    # Generate paths
+    true_path = generate_targets(m_true, observation_times, K, omegas)
+    pred_path = generate_targets(m_pred, observation_times, K, omegas)
+
+    # Compute EIG for NN path
+    eig_pred = None
+    # eig_true_recomputed = eig_true
+    try:
+        from oed_objective import compute_eig_for_path
+        eig_pred = compute_eig_for_path(m_pred, wind_coeffs, mesh, Vh_scalar)
+        if eig_pred is not None:
+            from penalties import boundary_penalty_dense, speed_penalty_dense
+            bdy_val, _ = boundary_penalty_dense(m_pred, observation_times, K, omegas)
+            spd_val, _ = speed_penalty_dense(m_pred, observation_times, K, omegas)
+            print(f"  NN penalties: boundary={bdy_val:.2f}, speed={spd_val:.2f}")
+            print(f"  NN raw EIG={eig_pred:.4f}")
+            
+            print(f"  Stored PDE EIG={eig_true:.4f}, , NN EIG={eig_pred:.4f}")
+            percent_diff += 100 * (eig_pred - eig_true) / eig_true
+            diffs = np.append(diffs, 100 * (eig_pred - eig_true) / eig_true)
+            if check_path_violations(pred_path, BUILDINGS, margin_violation=True):
+                margin_violations += 1
+            if check_path_violations(pred_path, BUILDINGS, margin_violation=False):
+                building_violations += 1
+
+    except Exception as e:
+        print(f"  WARNING: compute_eig_for_path failed: {e}")
+
+    # ---- Subplot 1: Wind field (using working example's plotting function) ----
+    ax1 = plt.subplot(n_plot, 4, plot_idx)
+    plot_idx += 1
+    
+    # Draw buildings
+    for b in BUILDINGS:
+        xmin, ymin = b['lower']
+        xmax, ymax = b['upper']
+        w = xmax - xmin
+        h = ymax - ymin
+        m = b['margin']
+        rect = mpatches.Rectangle((xmin, ymin), w, h,
+                                   color='black', alpha=0.8, zorder=4)
+        ax1.add_patch(rect)
+        rect_m = mpatches.Rectangle((xmin-m, ymin-m), w+2*m, h+2*m,
+                                     color='black', alpha=0.2, linestyle='--',
+                                     fill=True, zorder=3)
+        ax1.add_patch(rect_m)
+    
+    # Plot wind field using the same function as working example
+    if wind_field is not None:
+        try:
+            quiver = plot_wind_field_on_grid(ax1, wind_field, resolution=25)
+            plt.colorbar(quiver, ax=ax1, fraction=0.046, pad=0.04, label='Wind speed')
+        except Exception as e:
+            print(f"  Warning: Failed to plot wind field: {e}")
+            ax1.text(0.5, 0.5, f'Wind field plot error:\n{str(e)[:50]}',
+                    ha='center', va='center', transform=ax1.transAxes, fontsize=8)
+    else:
+        ax1.text(0.5, 0.5, 'Wind field unavailable',
+                ha='center', va='center', transform=ax1.transAxes, fontsize=10)
+
+    # Mark start position
+    ax1.plot(x_init[0], x_init[1], 'go', markersize=8, label='Start', zorder=10)
+    
+    ax1.set_xlim([0, 1])
+    ax1.set_ylim([0, 1])
+    ax1.set_aspect('equal')
+    ax1.set_title(f'Sample {sample_idx}: Wind Field')
+    ax1.grid(True, alpha=0.3)
+
+    # ---- Subplot 2: True vs Predicted Path ----
+    ax2 = plt.subplot(n_plot, 4, plot_idx)
+    plot_idx += 1
+    draw_buildings(ax2)
+    ax2.plot(true_path[:, 0], true_path[:, 1], 'b-', linewidth=2, label='True (PDE)')
+    ax2.plot(pred_path[:, 0], pred_path[:, 1], 'r--', linewidth=2, label='NN Prediction')
+    ax2.plot(x_init[0], x_init[1], 'go', markersize=10, label='Start (c0)', zorder=10)
+    ax2.plot(true_path[0, 0], true_path[0, 1], 'b^', markersize=8, label='True Start', zorder=9)
+    ax2.plot(pred_path[0, 0], pred_path[0, 1], 'r^', markersize=8, label='NN Start', zorder=9)
+
+    # Add time-colored sensor dots on both paths
+    n_obs = len(observation_times)
+    true_sensors = generate_targets(m_true, observation_times, K, omegas)
+    pred_sensors = generate_targets(m_pred, observation_times, K, omegas)
+    ax2.scatter(true_sensors[:, 0], true_sensors[:, 1], c=range(n_obs),
+                cmap='Blues', s=15, alpha=0.6, edgecolors='blue', linewidths=0.3, zorder=6)
+    ax2.scatter(pred_sensors[:, 0], pred_sensors[:, 1], c=range(n_obs),
+                cmap='Reds', s=15, alpha=0.6, edgecolors='red', linewidths=0.3, zorder=6)
+
+    ax2.set_xlim([0, 1])
+    ax2.set_ylim([0, 1])
+    ax2.set_aspect('equal')
+    ax2.set_title(f'Sample {sample_idx}: Path Comparison')
+    ax2.legend(fontsize=7, loc='upper left')
+    ax2.grid(True, alpha=0.3)
+
+    # ---- Subplot 3: Path Error ----
+    ax3 = plt.subplot(n_plot, 4, plot_idx)
+    plot_idx += 1
+    path_error = np.sqrt(np.sum((true_path - pred_path)**2, axis=1))
+    times = observation_times - T_1
+    ax3.plot(times, path_error, 'r-', linewidth=2)
+    ax3.fill_between(times, 0, path_error, alpha=0.3, color='red')
+    ax3.set_xlabel('Time (s)')
+    ax3.set_ylabel('Position Error')
+    ax3.set_title(f'Sample {sample_idx}: Path Error (RMSE: {np.mean(path_error):.4f})')
+    ax3.grid(True, alpha=0.3)
+
+    # ---- Subplot 4: EIG Comparison ----
+    ax4 = plt.subplot(n_plot, 4, plot_idx)
+    plot_idx += 1
+
+    labels = ['Initial', 'PDE Optimal']
+    values = [eig_init, eig_true]
+    colors_bar = ['orange', 'blue']
+
+    if eig_pred is not None:
+        labels.append('NN Prediction')
+        values.append(eig_pred)
+        colors_bar.append('red')
+
+    bars = ax4.bar(labels, values, color=colors_bar, alpha=0.7)
+    ax4.set_ylabel('EIG Value')
+    ax4.set_title(f'Sample {sample_idx}: EIG Comparison')
+    ax4.grid(True, alpha=0.3, axis='y')
+
+    for bar, val in zip(bars, values):
+        height = bar.get_height()
+        ax4.text(bar.get_x() + bar.get_width()/2., height,
+                f'{val:.2f}', ha='center', va='bottom', fontsize=8)
+
+    ic_error = np.linalg.norm(pred_path[0] - x_init)
+    print(f"  Sample {sample_idx}: True EIG={eig_true:.4f}, IC error={ic_error:.2e}, Path RMSE={np.mean(path_error):.4f}")
+
+percent_diff_avg = percent_diff / len(test_indices)
+
+print(f"\nPath Violations: Margin={margin_violations}/{len(test_indices)} ({100*margin_violations/len(test_indices):.1f}%), Building={building_violations}/{len(test_indices)} ({100*building_violations/len(test_indices):.1f}%)")
+
+
+fig.suptitle(f'Test Samples - Margin Violations: {margin_violations}/{len(test_indices)} | Building Violations: {building_violations}/{len(test_indices)} | Mean RMSE ={np.mean(path_error):.4f} | Median RMSE = {np.median(path_error):.4f} | Mean EIG % Diff={percent_diff_avg:.2f}% | Median EIG % Diff={np.median(diffs):.2f}%', 
+             fontsize=12, fontweight='bold',  x=0.1, y=1.05, ha='left', va='top',)
+
+
+plt.tight_layout()
+
+plot_save_name = f"eig_test_samples_{args.data_type}_ntrain{args.n_train}_percent_diff{percent_diff_avg:.2f}.png"
+plot_save_path = os.path.join(args.data_dir, plot_save_name)
+plt.savefig(plot_save_path, dpi=150, bbox_inches='tight')
+print(f"\nTest samples plot saved to {plot_save_path}")
+plt.close()
+
+print("\n" + "="*60)
+print("PLOTTING COMPLETE")
+print("="*60)
